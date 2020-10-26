@@ -5,7 +5,7 @@ use std::io::BufReader;
 use std::str;
 use hex::FromHex;
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 struct Signature {
 	count: usize,
 	seed: Vec<u8>,
@@ -17,27 +17,25 @@ struct Signature {
 	sm: Vec<u8>
 }
 
-struct SigKatIter {
-	reader: BufReader<File>,
-}
-
 enum ReadResult {
+	ReadMore,
 	ReadDone,
 	ReadError,
 }
 
-//TODO: generic?
-fn atou(s: &str) -> usize {
+// Converts txt to usize
+fn to_uint(s: &str) -> usize {
 	if s.is_empty() {
 		return 0;
 	}
 	match s.parse() {
 		Ok(v) => v,
-		Err(_) => 0
+		Err(e) => panic!(e)
 	}
 }
 
-fn stohex(s: &str) -> Vec<u8> {
+// Converts hex in txt, to an array of bytes
+fn to_u8arr(s: &str) -> Vec<u8> {
 	match Vec::from_hex(s) {
 		Ok(v) => v,
 		// Panic here is good, because when execution is
@@ -46,40 +44,53 @@ fn stohex(s: &str) -> Vec<u8> {
 	}
 }
 
-// TODO: how to do default initalization better
-impl Default for Signature {
-	fn default() -> Self {
-	    Signature {
-	    	count: 0,
-			seed: Vec::<u8>::new(),
-			mlen: 0,
-			msg: Vec::<u8>::new(),
-			pk: Vec::<u8>::new(),
-			sk: Vec::<u8>::new(),
-			smlen: 0,
-			sm: Vec::<u8>::new(),
-	    }
+impl Signature {
+	fn parse_element(el: &mut Signature, k: &str, v: &str) -> ReadResult {
+		match k {
+			"count" => el.count = to_uint(v),
+			"seed" => el.seed = to_u8arr(v),
+			"mlen" => el.mlen = to_uint(v),
+			"msg" => el.msg = to_u8arr(v),
+			"pk" => el.pk = to_u8arr(v),
+			"sk" => el.sk = to_u8arr(v),
+			"smlen" => el.smlen = to_uint(v),
+			"sm" => {
+				el.sm = to_u8arr(v);
+				// Last item for the record
+				return ReadResult::ReadDone;
+			}
+			_ => return ReadResult::ReadError,
+		};
+		return ReadResult::ReadMore;
 	}
 }
 
-impl Iterator for SigKatIter {
+struct KatIterator {
+	reader: BufReader<File>,
+}
+
+impl Iterator for KatIterator {
 	type Item = Signature;
 	fn next(&mut self) -> Option<Self::Item> {
 		match self.read_kat() {
 			Ok(v) => return Some(v),
 			Err(e) => match e {
 				ReadResult::ReadDone => return None,
-				ReadResult::ReadError=> panic!("Error occured while reading"),
+				ReadResult::ReadError | ReadResult::ReadMore
+					=> panic!("Error occured while reading"),
 			}
 		};
 	}
 }
 
-impl SigKatIter {
-	pub fn new(f: File) -> SigKatIter {
-		return SigKatIter{reader: BufReader::new(f)};
+impl KatIterator {
+	fn new(f: File) -> KatIterator {
+		return KatIterator{reader: BufReader::new(f)};
 	}
+}
 
+
+impl KatIterator {
 	fn read_kat(&mut self) -> Result<Signature, ReadResult>{
 		// TODO: do I really need to use ::default()?
 		let mut el: Signature = Default::default();
@@ -102,19 +113,11 @@ impl SigKatIter {
 				return Err(ReadResult::ReadError);
 			}
 
-			let valtxt = v[1].trim();
-			match v[0].trim() {
-				"count" => el.count = atou(valtxt),
-				"seed" => el.seed = stohex(valtxt),
-				"mlen" => el.mlen = atou(valtxt),
-				"msg" => el.msg = stohex(valtxt),
-				"pk" => el.pk = stohex(valtxt),
-				"sk" => el.sk = stohex(valtxt),
-				"smlen" => el.smlen = atou(valtxt),
-				// Last item for the record
-				"sm" => { el.sm = stohex(valtxt); break},
-				_ => return Err(ReadResult::ReadError)
-			};
+			match Signature::parse_element(&mut el, v[0].trim(), v[1].trim()) {
+				ReadResult::ReadError => return Err(ReadResult::ReadError),
+				ReadResult::ReadDone => break,
+				_ => {continue;},
+			}
 		}
 
 		return Ok(el);
@@ -125,10 +128,10 @@ fn main() {
 	let file = File::open(&"/home/kris/data/02_Work/pqshield/submissions_round3/Rainbow/KAT/Vc_Classic/PQCsignKAT_1408736.req".to_string());
 	let iter = match file {
 		Err(_) => panic!("Can't open a file"),
-		Ok(f) => SigKatIter::new(f),
+		Ok(f) => KatIterator::new(f),
 	};
 
     for el in iter {
-    	println!("{:?}", el.count);
+    	println!("> {:?}", el.count);
     }
 }
