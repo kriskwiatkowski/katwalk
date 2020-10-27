@@ -17,10 +17,20 @@ struct Signature {
 	sm: Vec<u8>
 }
 
+// Possible results of reading a single KAT from file
 enum ReadResult {
 	ReadMore,
 	ReadDone,
 	ReadError,
+}
+
+// Each algoritym type needs to implement algorithm-specific KAT parsing
+trait AlgType {
+	fn parse_element(el: &mut Signature, k: &str, v: &str) -> ReadResult;
+}
+
+struct KatIterator {
+	reader: BufReader<File>,
 }
 
 // Converts txt to usize
@@ -44,31 +54,7 @@ fn to_u8arr(s: &str) -> Vec<u8> {
 	}
 }
 
-impl Signature {
-	fn parse_element(el: &mut Signature, k: &str, v: &str) -> ReadResult {
-		match k {
-			"count" => el.count = to_uint(v),
-			"seed" => el.seed = to_u8arr(v),
-			"mlen" => el.mlen = to_uint(v),
-			"msg" => el.msg = to_u8arr(v),
-			"pk" => el.pk = to_u8arr(v),
-			"sk" => el.sk = to_u8arr(v),
-			"smlen" => el.smlen = to_uint(v),
-			"sm" => {
-				el.sm = to_u8arr(v);
-				// Last item for the record
-				return ReadResult::ReadDone;
-			}
-			_ => return ReadResult::ReadError,
-		};
-		return ReadResult::ReadMore;
-	}
-}
-
-struct KatIterator {
-	reader: BufReader<File>,
-}
-
+// KatIterator iterates over KAT tests in a file
 impl Iterator for KatIterator {
 	type Item = Signature;
 	fn next(&mut self) -> Option<Self::Item> {
@@ -85,12 +71,9 @@ impl Iterator for KatIterator {
 
 impl KatIterator {
 	fn new(f: File) -> KatIterator {
-		return KatIterator{reader: BufReader::new(f)};
+		KatIterator{reader: BufReader::new(f)}
 	}
-}
 
-
-impl KatIterator {
 	fn read_kat(&mut self) -> Result<Signature, ReadResult>{
 		// TODO: do I really need to use ::default()?
 		let mut el: Signature = Default::default();
@@ -121,6 +104,28 @@ impl KatIterator {
 		}
 
 		return Ok(el);
+	}
+}
+
+// Implement AlgType for signature
+impl AlgType for Signature {
+	fn parse_element(el: &mut Signature, k: &str, v: &str) -> ReadResult {
+		match k {
+			"count" => el.count = to_uint(v),
+			"seed" => el.seed = to_u8arr(v),
+			"mlen" => el.mlen = to_uint(v),
+			"msg" => el.msg = to_u8arr(v),
+			"pk" => el.pk = to_u8arr(v),
+			"sk" => el.sk = to_u8arr(v),
+			"smlen" => el.smlen = to_uint(v),
+			"sm" => {
+				el.sm = to_u8arr(v);
+				// Last item for the record
+				return ReadResult::ReadDone;
+			}
+			_ => return ReadResult::ReadError,
+		};
+		ReadResult::ReadMore
 	}
 }
 
