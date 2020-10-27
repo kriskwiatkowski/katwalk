@@ -3,6 +3,7 @@ use std::fs::File;
 use std::io::prelude::*;
 use std::io::BufReader;
 use std::str;
+use std::marker;
 use hex::FromHex;
 
 #[derive(Debug, Default)]
@@ -17,6 +18,16 @@ struct Signature {
 	sm: Vec<u8>
 }
 
+#[derive(Debug, Default)]
+struct KeyEncapsMech {
+	count: usize,
+	seed: Vec<u8>,
+	pk: Vec<u8>,
+	sk: Vec<u8>,
+	ct: Vec<u8>,
+	ss: Vec<u8>
+}
+
 // Possible results of reading a single KAT from file
 enum ReadResult {
 	ReadMore,
@@ -26,11 +37,12 @@ enum ReadResult {
 
 // Each algoritym type needs to implement algorithm-specific KAT parsing
 trait AlgType {
-	fn parse_element(el: &mut Signature, k: &str, v: &str) -> ReadResult;
+	fn parse_element(el: &mut Self, k: &str, v: &str) -> ReadResult;
 }
 
-struct KatIterator {
+struct KatIterator<T: AlgType> {
 	reader: BufReader<File>,
+    phantom: marker::PhantomData<T>,
 }
 
 // Converts txt to usize
@@ -55,8 +67,8 @@ fn to_u8arr(s: &str) -> Vec<u8> {
 }
 
 // KatIterator iterates over KAT tests in a file
-impl Iterator for KatIterator {
-	type Item = Signature;
+impl<T: AlgType + Default> Iterator for KatIterator<T> {
+	type Item = T;
 	fn next(&mut self) -> Option<Self::Item> {
 		match self.read_kat() {
 			Ok(v) => return Some(v),
@@ -69,14 +81,16 @@ impl Iterator for KatIterator {
 	}
 }
 
-impl KatIterator {
-	fn new(f: File) -> KatIterator {
-		KatIterator{reader: BufReader::new(f)}
+impl<T: AlgType + Default> KatIterator<T> {
+	fn new(f: File) -> KatIterator<T> {
+		KatIterator{
+			reader: BufReader::new(f),
+			phantom: marker::PhantomData
+		}
 	}
 
-	fn read_kat(&mut self) -> Result<Signature, ReadResult>{
-		// TODO: do I really need to use ::default()?
-		let mut el: Signature = Default::default();
+	fn read_kat(&mut self) -> Result<T, ReadResult>{
+		let mut el: T = Default::default();
 
 		// Read one record
 		loop {
@@ -96,7 +110,7 @@ impl KatIterator {
 				return Err(ReadResult::ReadError);
 			}
 
-			match Signature::parse_element(&mut el, v[0].trim(), v[1].trim()) {
+			match T::parse_element(&mut el, v[0].trim(), v[1].trim()) {
 				ReadResult::ReadError => return Err(ReadResult::ReadError),
 				ReadResult::ReadDone => break,
 				_ => {continue;},
@@ -129,14 +143,36 @@ impl AlgType for Signature {
 	}
 }
 
+// Implement AlgType for signature
+impl AlgType for KeyEncapsMech {
+	fn parse_element(el: &mut KeyEncapsMech, k: &str, v: &str) -> ReadResult {
+		match k {
+			"count" => el.count = to_uint(v),
+			"seed" => el.seed = to_u8arr(v),
+			"pk" => el.pk = to_u8arr(v),
+			"sk" => el.sk = to_u8arr(v),
+			"ct" => el.ct = to_u8arr(v),
+			"ss" => {
+				el.ss = to_u8arr(v);
+				// Last item for the record
+				return ReadResult::ReadDone;
+			}
+			_ => return ReadResult::ReadError,
+		};
+		ReadResult::ReadMore
+	}
+}
+
 fn main() {
-	let file = File::open(&"/home/kris/data/02_Work/pqshield/submissions_round3/Rainbow/KAT/Vc_Classic/PQCsignKAT_1408736.req".to_string());
+	//let file = File::open(&"/home/kris/data/02_Work/pqshield/submissions_round3/Rainbow/KAT/Vc_Classic/PQCsignKAT_1408736.req".to_string());
+	let file = File::open(&"/home/kris/data/02_Work/pqshield/submissions_round3/SABER/KAT/FireSaber/PQCkemKAT_3040.rsp".to_string());
 	let iter = match file {
 		Err(_) => panic!("Can't open a file"),
-		Ok(f) => KatIterator::new(f),
+		//Ok(f) => KatIterator::<Signature>::new(f),
+		Ok(f) => KatIterator::<KeyEncapsMech>::new(f),
 	};
 
     for el in iter {
-    	println!("> {:?}", el.count);
+    	println!("> {:?}", el);
     }
 }
