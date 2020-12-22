@@ -22,16 +22,15 @@ fn to_u8arr(s: &str) -> Vec<u8> {
 }
 
 pub mod reader {
-	use std::fs::File;
-	use std::io::prelude::*;
-	use std::io::BufReader;
+	use std::io::{BufRead, BufReader};
 	use std::str;
 
 	#[derive(Copy, Clone)]
 	pub enum AlgType {
 		AlgSignature,
 		AlgKem,
-		AlgHash
+		AlgHash,
+		AlgXof,
 	}
 
 	#[derive(Debug, Default)]
@@ -56,14 +55,29 @@ pub mod reader {
 		pub ss: Vec<u8>
 	}
 
+	#[derive(Debug, Default)]
+	pub struct Hash {
+		pub len: usize,
+		pub msg: Vec<u8>,
+		pub md: Vec<u8>,
+	}
+
+	#[derive(Debug, Default)]
+	pub struct Xof {
+		pub count: usize,
+		pub outputlen: usize,
+		pub msg: Vec<u8>,
+		pub output: Vec<u8>,
+	}
+
 	pub struct Kat {
 		pub scheme_type : AlgType,
 		pub scheme_id: u32,
 		pub kat_file: &'static str,
 	}
 
-	pub struct KatReader {
-		reader: BufReader<File>,
+	pub struct KatReader<R: std::io::Read> {
+		reader: BufReader<R>,
 		alg_type: AlgType,
 		scheme_id: u32,
 	}
@@ -119,12 +133,47 @@ pub mod reader {
 		}
 	}
 
+	// Implement parser for the hash functions
+	impl Hash {
+		fn parse_element(self: &mut Self, k: &str, v: &str) -> ReadResult {
+			match k {
+				"Len" => self.len = super::to_uint(v),
+				"Msg" => self.msg = super::to_u8arr(v),
+				"MD" => {
+					self.md = super::to_u8arr(v);
+					return ReadResult::ReadDone;
+				}
+				_ => return ReadResult::ReadError,
+			}
+			ReadResult::ReadMore
+		}
+	}
+
+	// Implement parser for the XOF functions
+	impl Xof {
+		fn parse_element(self: &mut Self, k: &str, v: &str) -> ReadResult {
+			match k {
+				"COUNT" => self.count = super::to_uint(v),
+				"Outputlen" => self.outputlen = super::to_uint(v),
+				"Msg" => self.msg = super::to_u8arr(v),
+				"Output" => {
+					self.output = super::to_u8arr(v);
+					return ReadResult::ReadDone;
+				}
+				_ => return ReadResult::ReadError,
+			}
+			ReadResult::ReadMore
+		}
+	}
+
 	// Type used by iterator.
 	#[derive(Debug, Default)]
 	pub struct TestVector {
 		pub scheme_id: u32,
 		pub sig: Signature,
 		pub kem: Kem,
+		pub hash: Hash,
+		pub xof: Xof,
 	}
 
 	impl TestVector {
@@ -137,16 +186,17 @@ pub mod reader {
 			return match t {
 				AlgType::AlgKem => self.kem.parse_element(k, v),
 			    AlgType::AlgSignature => self.sig.parse_element(k, v),
-			    AlgType::AlgHash => ReadResult::ReadDone,
+			    AlgType::AlgHash => self.hash.parse_element(k, v),
+			    AlgType::AlgXof => self.xof.parse_element(k, v),
 			}
 		}
 	}
 
-	impl KatReader {
-		pub fn new(f: File, t: AlgType, scheme_id: u32) -> KatReader {
+	impl<R: std::io::Read> KatReader<R> {
+		pub fn new(r: BufReader<R>, t: AlgType, scheme_id: u32) -> KatReader<R> {
 		        KatReader{
 		        	alg_type: t,
-					reader: BufReader::new(f),
+					reader: r,
 					scheme_id: scheme_id,
 		        }
 		}
@@ -164,6 +214,10 @@ pub mod reader {
 				}
 
 				if !line.contains("=") {
+					continue;
+				}
+
+				if line.starts_with("[") || line.starts_with("#") {
 					continue;
 				}
 
@@ -185,7 +239,7 @@ pub mod reader {
 	}
 
 	// Iterator iterates over KAT tests in a file
-	impl Iterator for KatReader {
+	impl<R: std::io::Read> Iterator for KatReader<R> {
 		type Item = TestVector;
 		fn next(&mut self) -> Option<Self::Item> {
 			match self.read_kat() {
@@ -197,5 +251,71 @@ pub mod reader {
 				}
 			};
 		}
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::reader::*;
+	use std::io::Cursor;
+
+	#[test]
+	fn test_hash_parsing() {
+		let ex = "
+#  CAVS 19.0
+[XXX]
+Len = 0
+Msg = 00
+MD = 6b4e03423667dbb73b6e15454f0eb1abd4597f9a1b078e3f5b5a6bc7";
+
+		let r = KatReader::new(
+			std::io::BufReader::new(Cursor::new(ex)),
+			AlgType::AlgHash, 1);
+
+		let mut count = 0;
+		for el in r {
+			assert_eq!(el.hash.md.len(), 28);
+			assert_eq!(el.hash.len, 0);
+			assert_eq!(el.hash.msg, [0x00]);
+			assert_eq!(el.hash.md[0..5], [0x6B, 0x4E, 0x03, 0x42, 0x36]);
+			count+=1;
+		}
+		assert_eq!(count, 1);
+	}
+
+	#[test]
+	fn test_xof_parsing() {
+		let ex = "
+#  CAVS 19.0
+#  SHAKE256 VariableOut information for SHAKE3AllBitsGT
+#  Length values represented in bits
+#  Generated on Thu Jan 28 14:45:13 2016
+
+[Tested for Output of bit-oriented messages]
+[Input Length = 256]
+[Minimum Output Length (bits) = 20]
+[Maximum Output Length (bits) = 1297]
+COUNT = 72
+Outputlen = 3
+Msg = 37433497799ffbf297f8156d0c2ff67c08fe7a5b68237952e6c19c388d036f36
+Output = ea930a
+
+COUNT = 1
+";
+
+		let r = KatReader::new(
+			std::io::BufReader::new(Cursor::new(ex)),
+			AlgType::AlgXof, 1);
+
+		let mut count = 0;
+		for el in r {
+			assert_eq!(el.xof.count, 72);
+			assert_eq!(el.xof.outputlen, 3);
+			assert_eq!(el.xof.msg[0..5], [0x37, 0x43, 0x34, 0x97, 0x79]);
+			assert_eq!(el.xof.output.len(), el.xof.outputlen);
+			assert_eq!(el.xof.output, [0xEA, 0x93, 0x0A]);
+			count+=1;
+		}
+		assert_eq!(count, 1);
 	}
 }
