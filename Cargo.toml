@@ -1,6 +1,6 @@
 [package]
 name = "katwalk"
-version = "0.0.2"
+version = "0.0.3"
 authors = ["Kris Kwiatkowski <contact@amongbytes.com>"]
 edition = "2018"
 description = "Utility to iterate over NIST KAT vectors. It allows to bind an action for each test vector supplied by calling code. Hence, making it possible to run KAT testing. This is work in prograess version!!!"
