@@ -31,6 +31,7 @@ pub mod reader {
 		AlgKem,
 		AlgHash,
 		AlgXof,
+		AlgDh,
 	}
 
 	#[derive(Debug, Default)]
@@ -69,6 +70,17 @@ pub mod reader {
 		pub outputlen: usize,
 		pub msg: Vec<u8>,
 		pub output: Vec<u8>,
+	}
+
+	#[derive(Debug, Default)]
+	pub struct Dh {
+		pub count: usize,
+		pub public_key_x: Vec<u8>,
+		pub public_key_y: Vec<u8>,
+		pub other_key_x: Vec<u8>,
+		pub other_key_y: Vec<u8>,
+		pub shared_secret: Vec<u8>,
+		pub secret_key: Vec<u8>,
 	}
 
 	pub struct Kat {
@@ -169,6 +181,26 @@ pub mod reader {
 		}
 	}
 
+	// Implement parser for the XOF functions
+	impl Dh {
+		fn parse_element(self: &mut Self, k: &str, v: &str) -> ReadResult {
+			match k {
+				"COUNT" => self.count = super::to_uint(v),
+				"QCAVSx" => self.other_key_x = super::to_u8arr(v),
+				"QCAVSy" => self.other_key_y = super::to_u8arr(v),
+				"QIUTx" => self.public_key_x = super::to_u8arr(v),
+				"QIUTy" => self.public_key_y = super::to_u8arr(v),
+				"dIUT" => self.secret_key = super::to_u8arr(v),
+				"ZIUT" => {
+					self.shared_secret = super::to_u8arr(v);
+					return ReadResult::ReadDone;
+				}
+				_ => return ReadResult::ReadError,
+			}
+			ReadResult::ReadMore
+		}
+	}
+
 	// Type used by iterator.
 	#[derive(Debug, Default)]
 	pub struct TestVector {
@@ -178,6 +210,7 @@ pub mod reader {
 		pub kem: Kem,
 		pub hash: Hash,
 		pub xof: Xof,
+		pub dh: Dh,
 	}
 
 	impl TestVector {
@@ -192,6 +225,7 @@ pub mod reader {
 			    AlgType::AlgSignature => self.sig.parse_element(k, v),
 			    AlgType::AlgHash => self.hash.parse_element(k, v),
 			    AlgType::AlgXof => self.xof.parse_element(k, v),
+			    AlgType::AlgDh => self.dh.parse_element(k, v),
 			}
 		}
 
@@ -396,6 +430,33 @@ Output = 3109d9472ca436e805c6b3db2251a9bc
 				assert_eq!(el.xof.output[0..3], [0x31, 0x09, 0xD9]);
 				assert_eq!(count, 2);
 			}
+		}
+	}
+
+	#[test]
+	fn test_dh_parsing() {
+		let ex = "
+COUNT = 21
+QCAVSx = 700c48f77f56584c5cc632ca65640db91b6bacce3a4df6b42ce7cc838833d287
+QCAVSy = db71e509e3fd9b060ddb20ba5c51dcc5948d46fbf640dfe0441782cab85fa4ac
+dIUT = 7d7dc5f71eb29ddaf80d6214632eeae03d9058af1fb6d22ed80badb62bc1a534
+QIUTx = ead218590119e8876b29146ff89ca61770c4edbbf97d38ce385ed281d8a6b230
+QIUTy = 28af61281fd35e2fa7002523acc85a429cb06ee6648325389f59edfce1405141
+ZIUT = 46fc62106420ff012e54a434fbdd2d25ccc5852060561e68040dd7778997bd7b
+";
+
+		let r = KatReader::new(
+			std::io::BufReader::new(Cursor::new(ex)),
+			AlgType::AlgDh, 1);
+
+		for el in r {
+			assert_eq!(el.dh.public_key_x[0..3], [0xEA,0xD2,0x18]);
+			assert_eq!(el.dh.public_key_y[0..3], [0x28,0xAF,0x61]);
+			assert_eq!(el.dh.other_key_x[0..3], [0x70,0x0C,0x48]);
+			assert_eq!(el.dh.other_key_y[0..3], [0xDB,0x71,0xE5]);
+			assert_eq!(el.dh.secret_key[0..3], [0x7D,0x7D,0xC5]);
+			assert_eq!(el.dh.shared_secret[0..3], [0x46,0xFC,0x62]);
+			assert_eq!(el.dh.count, 21);
 		}
 	}
 }
