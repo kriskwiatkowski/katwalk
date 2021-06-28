@@ -7,7 +7,7 @@ fn to_uint(s: &str) -> usize {
 	}
 	match s.parse() {
 		Ok(v) => v,
-		Err(e) => panic!(e)
+		Err(e) => panic!("{}", e)
 	}
 }
 
@@ -17,7 +17,7 @@ fn to_u8arr(s: &str) -> Vec<u8> {
 		Ok(v) => v,
 		// Panic here is good, because when execution is
 		// here it means all checks should be already done.
-		Err(e) => panic!(e)
+		Err(e) => panic!("{}", e)
 	}
 }
 
@@ -93,7 +93,6 @@ pub mod reader {
 		reader: BufReader<R>,
 		alg_type: AlgType,
 		scheme_id: u32,
-		section: String,
 	}
 
 
@@ -229,8 +228,12 @@ pub mod reader {
 			}
 		}
 
-		fn set_section(&mut self, s: &String) {
+		pub fn set_section(&mut self, s: &String) {
 			self.section = s.clone();
+		}
+
+		pub fn get_section(&self) -> &String {
+			&self.section
 		}
 	}
 
@@ -240,7 +243,6 @@ pub mod reader {
 					reader,
 				    alg_type,
 				    scheme_id,
-				    section: String::from(""),
 		        }
 		}
 
@@ -425,8 +427,8 @@ Output = 3109d9472ca436e805c6b3db2251a9bc
 
 		let mut count = 0;
 		for el in r {
-			count+=1;
-			if el.section.starts_with("Outputlen = 128") {
+			count += 1;
+			if el.get_section().starts_with("Outputlen = 128") {
 				assert_eq!(el.xof.output[0..3], [0x31, 0x09, 0xD9]);
 				assert_eq!(count, 2);
 			}
