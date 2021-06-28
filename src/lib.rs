@@ -93,6 +93,7 @@ pub mod reader {
 		reader: BufReader<R>,
 		alg_type: AlgType,
 		scheme_id: u32,
+		current_section: String,
 	}
 
 
@@ -243,6 +244,7 @@ pub mod reader {
 					reader,
 				    alg_type,
 				    scheme_id,
+				    current_section: String::new(),
 		        }
 		}
 
@@ -258,19 +260,19 @@ pub mod reader {
 					_ => {},
 				}
 
-				if !line.contains("=") {
+				if line.trim().len() == 0 {
 					continue;
 				}
-
 				if line.starts_with("#") {
 					continue;
 				}
 
 				// Parse section
 				if line.trim().starts_with("[") && line.trim().ends_with("]") {
-					el.set_section(&line[1..line.len()-1].to_string());
+					self.current_section = line[1..line.len()].to_string();
 					continue;
 				}
+				el.set_section(&self.current_section);
 
 				let v: Vec<&str> = line.split("=").collect();
 				if v.len() != 2 {
