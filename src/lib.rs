@@ -81,6 +81,7 @@ pub mod reader {
 		reader: BufReader<R>,
 		alg_type: AlgType,
 		scheme_id: u32,
+		section: String,
 	}
 
 
@@ -172,6 +173,7 @@ pub mod reader {
 	#[derive(Debug, Default)]
 	pub struct TestVector {
 		pub scheme_id: u32,
+		pub section: String,
 		pub sig: Signature,
 		pub kem: Kem,
 		pub hash: Hash,
@@ -192,14 +194,19 @@ pub mod reader {
 			    AlgType::AlgXof => self.xof.parse_element(k, v),
 			}
 		}
+
+		fn set_section(&mut self, s: &String) {
+			self.section = s.clone();
+		}
 	}
 
 	impl<R: std::io::Read> KatReader<R> {
-		pub fn new(r: BufReader<R>, t: AlgType, scheme_id: u32) -> KatReader<R> {
+		pub fn new(reader: BufReader<R>, alg_type: AlgType, scheme_id: u32) -> KatReader<R> {
 		        KatReader{
-		        	alg_type: t,
-					reader: r,
-					scheme_id: scheme_id,
+					reader,
+				    alg_type,
+				    scheme_id,
+				    section: String::from(""),
 		        }
 		}
 
@@ -219,7 +226,13 @@ pub mod reader {
 					continue;
 				}
 
-				if line.starts_with("[") || line.starts_with("#") {
+				if line.starts_with("#") {
+					continue;
+				}
+
+				// Parse section
+				if line.trim().starts_with("[") && line.trim().ends_with("]") {
+					el.set_section(&line[1..line.len()-1].to_string());
 					continue;
 				}
 
@@ -228,7 +241,6 @@ pub mod reader {
 					return Err(ReadResult::ReadError);
 				}
 
-				// OZAPTF: wrong
 				match el.parse_element(self.alg_type, v[0].trim(), v[1].trim()) {
 					ReadResult::ReadError => return Err(ReadResult::ReadError),
 					ReadResult::ReadDone => break,
@@ -344,12 +356,46 @@ Output = 3109d9472ca436e805c6b3db2251a9bc
 
 		let mut count = 0;
 		for el in r {
+			count+=1;
 			assert_eq!(el.xof.msg[0..5], [0xA6, 0xFE, 0x00, 0x06, 0x42]);
 			assert_eq!(el.xof.output.len(), 128/8);
 			assert_eq!(el.xof.output[0..3], [0x31, 0x09, 0xD9]);
 			assert_eq!(el.xof.len, 2696);
-			count+=1;
+			assert_eq!(count, 1);
 		}
-		assert_eq!(count, 1);
+	}
+
+	#[test]
+	fn test_select_block() {
+		let ex = "
+#  CAVS 19.0
+[Outputlen = 64]
+
+Len = 2696
+Msg = deadbeef
+Output =
+3109d9472ca436e8
+
+# This block must be selected
+[Outputlen = 128]
+
+Len = 2696
+Msg = a6fe00064257aa318b621c5eb311d32bb8004c2fa1a969d205d71762cc5d2e633907992629d1b69d9557ff6d5e8deb454ab00f6e497c89a4fea09e257a6fa2074bd818ceb5981b3e3faefd6e720f2d1edd9c5e4a5c51e5009abf636ed5bca53fe159c8287014a1bd904f5c8a7501625f79ac81eb618f478ce21cae6664acffb30572f059e1ad0fc2912264e8f1ca52af26c8bf78e09d75f3dd9fc734afa8770abe0bd78c90cc2ff448105fb16dd2c5b7edd8611a62e537db9331f5023e16d6ec150cc6e706d7c7fcbfff930c7281831fd5c4aff86ece57ed0db882f59a5fe403105d0592ca38a081fed84922873f538ee774f13b8cc09bd0521db4374aec69f4bae6dcb66455822c0b84c91a3474ffac2ad06f0a4423cd2c6a49d4f0d6242d6a1890937b5d9835a5f0ea5b1d01884d22a6c1718e1f60b3ab5e232947c76ef70b344171083c688093b5f1475377e3069863
+Output = 3109d9472ca436e805c6b3db2251a9bc
+
+";
+
+		let r = KatReader::new(
+			std::io::BufReader::new(Cursor::new(ex)),
+			AlgType::AlgXof, 1);
+
+		let mut count = 0;
+		for el in r {
+			count+=1;
+			if el.section.starts_with("Outputlen = 128") {
+				assert_eq!(el.xof.output[0..3], [0x31, 0x09, 0xD9]);
+				assert_eq!(count, 2);
+			}
+		}
 	}
 }
