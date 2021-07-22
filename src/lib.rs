@@ -1,7 +1,7 @@
 use hex::FromHex;
 
 // Converts txt to usize
-fn to_uint(s: &str) -> usize {
+fn to_usize(s: &str) -> usize {
 	if s.is_empty() {
 		return 0;
 	}
@@ -32,6 +32,7 @@ pub mod reader {
 		AlgHash,
 		AlgXof,
 		AlgDh,
+		AlgHmac,
 	}
 
 	#[derive(Debug, Default)]
@@ -83,6 +84,14 @@ pub mod reader {
 		pub secret_key: Vec<u8>,
 	}
 
+	#[derive(Debug, Default)]
+	pub struct Hmac {
+		pub count: usize,
+		pub msg: Vec<u8>,
+		pub mac: Vec<u8>,
+		pub secret_key: Vec<u8>,
+	}
+
 	pub struct Kat {
 		pub scheme_type : AlgType,
 		pub scheme_id: u32,
@@ -109,13 +118,13 @@ pub mod reader {
 	impl Signature {
 		fn parse_element(self: &mut Self, k: &str, v: &str) -> ReadResult {
 			match k {
-				"count" => self.count = super::to_uint(v),
+				"count" => self.count = super::to_usize(v),
 				"seed" => self.seed = super::to_u8arr(v),
-				"mlen" => self.mlen = super::to_uint(v),
+				"mlen" => self.mlen = super::to_usize(v),
 				"msg" => self.msg = super::to_u8arr(v),
 				"pk" => self.pk = super::to_u8arr(v),
 				"sk" => self.sk = super::to_u8arr(v),
-				"smlen" => self.smlen = super::to_uint(v),
+				"smlen" => self.smlen = super::to_usize(v),
 				"sm" => {
 					self.sm = super::to_u8arr(v);
 					// Last item for the record
@@ -131,7 +140,7 @@ pub mod reader {
 	impl Kem {
 		fn parse_element(self: &mut Self, k: &str, v: &str) -> ReadResult {
 			match k {
-				"count" => self.count = super::to_uint(v),
+				"count" => self.count = super::to_usize(v),
 				"seed" => self.seed = super::to_u8arr(v),
 				"pk" => self.pk = super::to_u8arr(v),
 				"sk" => self.sk = super::to_u8arr(v),
@@ -151,7 +160,7 @@ pub mod reader {
 	impl Hash {
 		fn parse_element(self: &mut Self, k: &str, v: &str) -> ReadResult {
 			match k {
-				"Len" => self.len = super::to_uint(v),
+				"Len" => self.len = super::to_usize(v),
 				"Msg" => self.msg = super::to_u8arr(v),
 				"MD" => {
 					self.md = super::to_u8arr(v);
@@ -167,10 +176,10 @@ pub mod reader {
 	impl Xof {
 		fn parse_element(self: &mut Self, k: &str, v: &str) -> ReadResult {
 			match k {
-				"COUNT" => self.count = super::to_uint(v),
-				"Outputlen" => self.outputlen = super::to_uint(v),
+				"COUNT" => self.count = super::to_usize(v),
+				"Outputlen" => self.outputlen = super::to_usize(v),
 				"Msg" => self.msg = super::to_u8arr(v),
-				"Len" => self.len = super::to_uint(v),
+				"Len" => self.len = super::to_usize(v),
 				"Output" => {
 					self.output = super::to_u8arr(v);
 					return ReadResult::ReadDone;
@@ -185,7 +194,7 @@ pub mod reader {
 	impl Dh {
 		fn parse_element(self: &mut Self, k: &str, v: &str) -> ReadResult {
 			match k {
-				"COUNT" => self.count = super::to_uint(v),
+				"COUNT" => self.count = super::to_usize(v),
 				"QCAVSx" => self.other_key_x = super::to_u8arr(v),
 				"QCAVSy" => self.other_key_y = super::to_u8arr(v),
 				"QIUTx" => self.public_key_x = super::to_u8arr(v),
@@ -193,6 +202,35 @@ pub mod reader {
 				"dIUT" => self.secret_key = super::to_u8arr(v),
 				"ZIUT" => {
 					self.shared_secret = super::to_u8arr(v);
+					return ReadResult::ReadDone;
+				}
+				_ => return ReadResult::ReadError,
+			}
+			ReadResult::ReadMore
+		}
+	}
+
+	// Implement parser for the XOF functions
+	impl Hmac {
+		fn parse_element(self: &mut Self, k: &str, v: &str) -> ReadResult {
+			let mut klen = 0usize;
+			let mut tlen = 0usize;
+			match k {
+				// Rust warns here, but it is wrong
+				#[allow(unused_assignments)]
+				"Klen" => klen = super::to_usize(v),
+				#[allow(unused_assignments)]
+				"Tlen" => tlen = super::to_usize(v),
+				"Count" => self.count = super::to_usize(v),
+				"Key" => self.secret_key = super::to_u8arr(v),
+				"Msg" => self.msg = super::to_u8arr(v),
+				"Mac" => {
+					self.mac = super::to_u8arr(v);
+					if klen != self.secret_key.len() || tlen != self.mac.len() {
+						// At this point key,tlen,klen and mac must be parsed
+						// and delcared sizes must correspond to sizes of arrays
+						return ReadResult::ReadError;
+					}
 					return ReadResult::ReadDone;
 				}
 				_ => return ReadResult::ReadError,
@@ -211,6 +249,7 @@ pub mod reader {
 		pub hash: Hash,
 		pub xof: Xof,
 		pub dh: Dh,
+		pub hmac: Hmac,
 	}
 
 	impl TestVector {
@@ -226,6 +265,7 @@ pub mod reader {
 			    AlgType::AlgHash => self.hash.parse_element(k, v),
 			    AlgType::AlgXof => self.xof.parse_element(k, v),
 			    AlgType::AlgDh => self.dh.parse_element(k, v),
+			    AlgType::AlgHmac => self.hmac.parse_element(k, v),
 			}
 		}
 
