@@ -44,3 +44,6 @@ MD = 6b4e03423667dbb73b6e15454f0eb1abd4597f9a1b078e3f5b5a6bc7";
 
 ## Used by
 It is used by PQC library ([here](https://github.com/kriskwiatkowski/pqc/blob/main/test/katrunner/src/main.rs)) for functional testing.
+
+## Status
+Algorithms are added on "as needed" bases. Don't judge implementation, it needs major rewrite.
