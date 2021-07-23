@@ -4,13 +4,13 @@ Utility to iterate over NIST Known Answer Tests vectors from CAVP. It
 allows to bind an action for each test vector supplied by calling code. 
 
 ## Supported schemes:
-| Algorithm | Specification name          |
+| Algorithm | NIST Specification name     |
 |-----------|----------------------------|
-| SHA2      | FIPS-184-1 |
+| SHA2      | FIPS-180-4 |
 | SHA3      | FIPS-202 |
 | SHAKE     | FIPS-202 |
 | HMAC      | FIPS-198 |
-| Diffie-Hellman | SP 800-56C |
+| Diffie-Hellman | SP 800-56A |
 | NIST PQC  | All KEM & Signature schemes  |
 
 ## Example
