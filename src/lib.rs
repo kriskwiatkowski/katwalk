@@ -90,6 +90,8 @@ pub mod reader {
 		pub msg: Vec<u8>,
 		pub mac: Vec<u8>,
 		pub secret_key: Vec<u8>,
+		tlen: usize,
+		klen: usize,
 	}
 
 	pub struct Kat {
@@ -213,20 +215,16 @@ pub mod reader {
 	// Implement parser for the XOF functions
 	impl Hmac {
 		fn parse_element(self: &mut Self, k: &str, v: &str) -> ReadResult {
-			let mut klen = 0usize;
-			let mut tlen = 0usize;
 			match k {
 				// Rust warns here, but it is wrong
-				#[allow(unused_assignments)]
-				"Klen" => klen = super::to_usize(v),
-				#[allow(unused_assignments)]
-				"Tlen" => tlen = super::to_usize(v),
+				"Klen" => self.klen = super::to_usize(v),
+				"Tlen" => self.tlen = super::to_usize(v),
 				"Count" => self.count = super::to_usize(v),
 				"Key" => self.secret_key = super::to_u8arr(v),
 				"Msg" => self.msg = super::to_u8arr(v),
 				"Mac" => {
 					self.mac = super::to_u8arr(v);
-					if klen != self.secret_key.len() || tlen != self.mac.len() {
+					if self.klen != self.secret_key.len() || self.tlen != self.mac.len() {
 						// At this point key,tlen,klen and mac must be parsed
 						// and delcared sizes must correspond to sizes of arrays
 						return ReadResult::ReadError;
