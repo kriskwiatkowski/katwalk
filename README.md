@@ -3,9 +3,18 @@
 Utility to iterate over NIST Known Answer Tests vectors from CAVP. It
 allows to bind an action for each test vector supplied by calling code. 
 
+## Supported schemes:
+| Algorithm | Specification name          |
+|-----------|----------------------------|
+| SHA2      | FIPS-184-1 |
+| SHA3      | FIPS-202 |
+| SHAKE     | FIPS-202 |
+| HMAC      | FIPS-198 |
+| Diffie-Hellman | SP 800-56C |
+| NIST PQC  | All KEM & Signature schemes  |
+
 ## Example
-It is pretty much work in progress, but already usable for some algorithms. Here below
-an example of usage for one vector for SHA3 KAT (FIPS 202).
+Here below an example of usage for one vector for SHA3 KAT (FIPS 202).
 ```
 // Vector copy pasted from NIST specs
 let ex = "
