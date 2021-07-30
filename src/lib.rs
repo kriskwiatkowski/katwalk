@@ -23,7 +23,7 @@ fn to_u8arr(s: &str) -> Vec<u8> {
 
 pub mod reader {
 	use std::io::{BufRead, BufReader};
-	use std::str;
+	use std::collections::HashSet;
 
 	#[derive(Copy, Clone)]
 	pub enum AlgType {
@@ -33,6 +33,7 @@ pub mod reader {
 		AlgXof,
 		AlgDh,
 		AlgHmac,
+		AlgKdf,
 	}
 
 	#[derive(Debug, Default)]
@@ -94,6 +95,17 @@ pub mod reader {
 		klen: usize,
 	}
 
+	#[derive(Debug, Default)]
+	pub struct Kdf {
+		pub count: usize,
+		pub k0: Vec<u8>,
+		pub salt: Vec<u8>,
+		pub prk: Vec<u8>,
+		pub info: Vec<u8>,
+		pub iv: Vec<u8>,
+		pub derived_key: Vec<u8>,
+	}
+
 	pub struct Kat {
 		pub scheme_type : AlgType,
 		pub scheme_id: u32,
@@ -104,7 +116,8 @@ pub mod reader {
 		reader: BufReader<R>,
 		alg_type: AlgType,
 		scheme_id: u32,
-		current_section: String,
+		current_sections: HashSet<String>,
+		elements_processed: usize,
 	}
 
 
@@ -178,11 +191,11 @@ pub mod reader {
 	impl Xof {
 		fn parse_element(self: &mut Self, k: &str, v: &str) -> ReadResult {
 			match k {
-				"COUNT" => self.count = super::to_usize(v),
+				"COUNT" 	=> self.count = super::to_usize(v),
 				"Outputlen" => self.outputlen = super::to_usize(v),
-				"Msg" => self.msg = super::to_u8arr(v),
-				"Len" => self.len = super::to_usize(v),
-				"Output" => {
+				"Msg" 		=> self.msg = super::to_u8arr(v),
+				"Len" 		=> self.len = super::to_usize(v),
+				"Output" 	=> {
 					self.output = super::to_u8arr(v);
 					return ReadResult::ReadDone;
 				}
@@ -216,7 +229,6 @@ pub mod reader {
 	impl Hmac {
 		fn parse_element(self: &mut Self, k: &str, v: &str) -> ReadResult {
 			match k {
-				// Rust warns here, but it is wrong
 				"Klen" => self.klen = super::to_usize(v),
 				"Tlen" => self.tlen = super::to_usize(v),
 				"Count" => self.count = super::to_usize(v),
@@ -237,17 +249,45 @@ pub mod reader {
 		}
 	}
 
+	// Implement parser for the XOF functions
+	impl Kdf {
+		fn parse_element(self: &mut Self, k: &str, v: &str) -> ReadResult {
+			match k {
+				"COUNT" 			=> self.count 	= super::to_usize(v),
+				"Salt" 				=> self.salt 	= super::to_u8arr(v),
+				"K_0" 				=> self.k0 		= super::to_u8arr(v),
+				"IV" 				=> self.iv 		= super::to_u8arr(v),
+				"FixedInputData" 	=> self.info 	= super::to_u8arr(v),
+				"KI" 				=> self.prk 	= super::to_u8arr(v),
+				"KO" 				=> {
+					self.derived_key = super::to_u8arr(v);
+					/*
+					if self.klen != self.secret_key.len() || self.tlen != self.mac.len() {
+						// At this point key,tlen,klen and mac must be parsed
+						// and delcared sizes must correspond to sizes of arrays
+						return ReadResult::ReadError;
+					}
+					*/
+					return ReadResult::ReadDone;
+				}
+				_ => return ReadResult::ReadMore,
+			}
+			ReadResult::ReadMore
+		}
+	}
+
 	// Type used by iterator.
 	#[derive(Debug, Default)]
 	pub struct TestVector {
 		pub scheme_id: u32,
-		pub section: String,
+		pub sections: HashSet<String>,
 		pub sig: Signature,
 		pub kem: Kem,
 		pub hash: Hash,
 		pub xof: Xof,
 		pub dh: Dh,
 		pub hmac: Hmac,
+		pub kdf: Kdf,
 	}
 
 	impl TestVector {
@@ -264,15 +304,26 @@ pub mod reader {
 			    AlgType::AlgXof => self.xof.parse_element(k, v),
 			    AlgType::AlgDh => self.dh.parse_element(k, v),
 			    AlgType::AlgHmac => self.hmac.parse_element(k, v),
+			    AlgType::AlgKdf => self.kdf.parse_element(k, v),
 			}
 		}
 
-		pub fn set_section(&mut self, s: &String) {
-			self.section = s.clone();
+		pub fn set_sections(&mut self, s: &HashSet<String>) {
+			self.sections = s.clone();
 		}
 
-		pub fn get_section(&self) -> &String {
-			&self.section
+		pub fn has_same_sections(&self, s: &Vec<&str>) -> bool {
+				println!("s.len()={} self.len() ={} \n", s.len(), self.sections.len());
+			if s.len() != self.sections.len() {
+				return false;
+			}
+			for i in s.iter() {
+				if !self.sections.contains(&i.to_string()) {
+					println!(">>>> {}", i);
+					return false;
+				}
+			}
+			return true;
 		}
 	}
 
@@ -282,12 +333,13 @@ pub mod reader {
 					reader,
 				    alg_type,
 				    scheme_id,
-				    current_section: String::new(),
+				    current_sections: HashSet::new(),
+				    elements_processed: 0,
 		        }
 		}
 
 		fn read_kat(&mut self) -> Result<TestVector, ReadResult>{
-			let mut el: TestVector = TestVector::new(self.scheme_id);
+			let mut vectors: TestVector = TestVector::new(self.scheme_id);
 
 			// Read one record
 			loop {
@@ -306,25 +358,48 @@ pub mod reader {
 				}
 
 				// Parse section
-				if line.trim().starts_with("[") && line.trim().ends_with("]") {
-					self.current_section = line[1..line.len()].to_string();
+				line = line.trim().to_string();
+				if line.starts_with("[") && line.ends_with("]") {
+					let mut l = line.to_string();
+					l = l.strip_suffix("]").unwrap().to_string();
+					l = l.strip_prefix("[").unwrap().to_string();
+					self.current_sections.insert(l);
 					continue;
 				}
-				el.set_section(&self.current_section);
+
+				// If section parsing has finished, make them available to runner
+				// and clear from current_sections
+				if self.current_sections.len() > 0 {
+					vectors.set_sections(&self.current_sections);
+					self.current_sections.clear();
+				}
 
 				let v: Vec<&str> = line.split("=").collect();
 				if v.len() != 2 {
+					println!("{}", line);
 					return Err(ReadResult::ReadError);
 				}
 
-				match el.parse_element(self.alg_type, v[0].trim(), v[1].trim()) {
+				self.increment_element_processed();
+				match vectors.parse_element(self.alg_type, v[0].trim(), v[1].trim()) {
 					ReadResult::ReadError => return Err(ReadResult::ReadError),
 					ReadResult::ReadDone => break,
-					_ => {continue;},
+					_ => {
+
+						continue;
+					},
 				}
 			}
 
-			return Ok(el);
+			return Ok(vectors);
+		}
+
+		pub fn increment_element_processed(&mut self) {
+			self.elements_processed += 1;
+		}
+
+		pub fn elements_processed(self) -> usize {
+			self.elements_processed
 		}
 	}
 
@@ -337,7 +412,7 @@ pub mod reader {
 				Err(e) => match e {
 					ReadResult::ReadDone => return None,
 					ReadResult::ReadError | ReadResult::ReadMore
-						=> panic!("Error occured while reading"),
+						=> panic!("Error occured while reading {}", e as u64),
 				}
 			};
 		}
@@ -449,12 +524,12 @@ Output = 3109d9472ca436e805c6b3db2251a9bc
 
 Len = 2696
 Msg = deadbeef
-Output =
-3109d9472ca436e8
+Output = 3109d9472ca436e8
 
 # This block must be selected
 [Outputlen = 128]
 
+COUNT = 1
 Len = 2696
 Msg = a6fe00064257aa318b621c5eb311d32bb8004c2fa1a969d205d71762cc5d2e633907992629d1b69d9557ff6d5e8deb454ab00f6e497c89a4fea09e257a6fa2074bd818ceb5981b3e3faefd6e720f2d1edd9c5e4a5c51e5009abf636ed5bca53fe159c8287014a1bd904f5c8a7501625f79ac81eb618f478ce21cae6664acffb30572f059e1ad0fc2912264e8f1ca52af26c8bf78e09d75f3dd9fc734afa8770abe0bd78c90cc2ff448105fb16dd2c5b7edd8611a62e537db9331f5023e16d6ec150cc6e706d7c7fcbfff930c7281831fd5c4aff86ece57ed0db882f59a5fe403105d0592ca38a081fed84922873f538ee774f13b8cc09bd0521db4374aec69f4bae6dcb66455822c0b84c91a3474ffac2ad06f0a4423cd2c6a49d4f0d6242d6a1890937b5d9835a5f0ea5b1d01884d22a6c1718e1f60b3ab5e232947c76ef70b344171083c688093b5f1475377e3069863
 Output = 3109d9472ca436e805c6b3db2251a9bc
@@ -465,14 +540,51 @@ Output = 3109d9472ca436e805c6b3db2251a9bc
 			std::io::BufReader::new(Cursor::new(ex)),
 			AlgType::AlgXof, 1);
 
+		let mut found = false;
 		let mut count = 0;
 		for el in r {
 			count += 1;
-			if el.get_section().starts_with("Outputlen = 128") {
+			if el.has_same_sections(&vec![&"Outputlen = 128"]) {
 				assert_eq!(el.xof.output[0..3], [0x31, 0x09, 0xD9]);
 				assert_eq!(count, 2);
+				found = true;
 			}
 		}
+		assert!(found);
+	}
+
+	#[test]
+	fn test_select_from_multisections() {
+		let ex = "
+#  CAVS 19.0
+# This block must be selected
+[Outputlen = 128]
+
+Len = 2696
+Msg = a6fe00064257aa318b621c5eb311d32bb8004c2fa1a969d205d71762cc5d2e633907992629d1b69d9557ff6d5e8deb454ab00f6e497c89a4fea09e257a6fa2074bd818ceb5981b3e3faefd6e720f2d1edd9c5e4a5c51e5009abf636ed5bca53fe159c8287014a1bd904f5c8a7501625f79ac81eb618f478ce21cae6664acffb30572f059e1ad0fc2912264e8f1ca52af26c8bf78e09d75f3dd9fc734afa8770abe0bd78c90cc2ff448105fb16dd2c5b7edd8611a62e537db9331f5023e16d6ec150cc6e706d7c7fcbfff930c7281831fd5c4aff86ece57ed0db882f59a5fe403105d0592ca38a081fed84922873f538ee774f13b8cc09bd0521db4374aec69f4bae6dcb66455822c0b84c91a3474ffac2ad06f0a4423cd2c6a49d4f0d6242d6a1890937b5d9835a5f0ea5b1d01884d22a6c1718e1f60b3ab5e232947c76ef70b344171083c688093b5f1475377e3069863
+Output = 3109d9472ca436e805c6b3db2251a9bc
+[Outputlen = 64]
+[TEST = 1]
+
+Len = 2696
+Msg = deadbeef
+Output = 3109d9472ca436e8
+";
+		let mut found = false;
+		let r = KatReader::new(
+			std::io::BufReader::new(Cursor::new(ex)),
+			AlgType::AlgXof, 1);
+
+		let mut count = 0;
+		for el in r {
+			count += 1;
+			if el.has_same_sections(&vec![&"Outputlen = 64", &"TEST = 1"]) {
+				assert_eq!(el.xof.output[0..3], [0x31, 0x09, 0xD9]);
+				assert_eq!(count, 2);
+				found = true;
+			}
+		}
+		assert!(found);
 	}
 
 	#[test]
