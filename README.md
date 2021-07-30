@@ -11,6 +11,7 @@ allows to bind an action for each test vector supplied by calling code.
 | SHAKE     | FIPS-202 |
 | HMAC      | FIPS-198 |
 | Diffie-Hellman | SP 800-56A |
+| KDF | SP 800-108 |
 | NIST PQC  | All KEM & Signature schemes  |
 
 ## Example
