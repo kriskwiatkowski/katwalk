@@ -23,7 +23,8 @@ fn to_u8arr(s: &str) -> Vec<u8> {
 
 pub mod reader {
 	use std::io::{BufRead, BufReader};
-	use std::collections::HashSet;
+	use std::collections::{HashSet, LinkedList};
+	use std::cmp::Ordering;
 
 	#[derive(Copy, Clone)]
 	pub enum AlgType {
@@ -34,6 +35,7 @@ pub mod reader {
 		AlgDh,
 		AlgHmac,
 		AlgKdf,
+		AlgDrbg,
 	}
 
 	#[derive(Debug, Default)]
@@ -104,6 +106,18 @@ pub mod reader {
 		pub info: Vec<u8>,
 		pub iv: Vec<u8>,
 		pub derived_key: Vec<u8>,
+	}
+
+	#[derive(Debug, Default)]
+	pub struct Drbg {
+		pub count: usize,
+		pub entropy_input: Vec<u8>,
+		pub entropy_input_reseed: Vec<u8>,
+		pub nonce: Vec<u8>,
+		pub personalization: Vec<u8>,
+		pub additional_input_reseed: Vec<u8>,
+		pub additional_input: LinkedList<Vec<u8>>,
+		pub returned_bits: Vec<u8>,
 	}
 
 	pub struct Kat {
@@ -262,14 +276,32 @@ pub mod reader {
 				"KI" 				=> self.prk 	= super::to_u8arr(v),
 				"KO" 				=> {
 					self.derived_key = super::to_u8arr(v);
-					/*
-					if self.klen != self.secret_key.len() || self.tlen != self.mac.len() {
-						// At this point key,tlen,klen and mac must be parsed
-						// and delcared sizes must correspond to sizes of arrays
-						return ReadResult::ReadError;
-					}
-					*/
 					return ReadResult::ReadDone;
+				}
+				_ => return ReadResult::ReadMore,
+			}
+			ReadResult::ReadMore
+		}
+	}
+
+	// Implement parser for the XOF functions
+	impl Drbg {
+		fn parse_element(self: &mut Self, k: &str, v: &str) -> ReadResult {
+			match k {
+				"COUNT"					=> self.count = super::to_usize(v),
+				"EntropyInput"			=> self.entropy_input = super::to_u8arr(v),
+				"Nonce" 				=> self.nonce = super::to_u8arr(v),
+				"PersonalizationString" => self.personalization = super::to_u8arr(v),
+				"EntropyInputReseed"	=> self.entropy_input_reseed = super::to_u8arr(v),
+				"AdditionalInput"		=> self.additional_input.push_back(super::to_u8arr(v)),
+				"AdditionalInputReseed" => self.additional_input_reseed = super::to_u8arr(v),
+				"ReturnedBits" 		=> {
+					self.returned_bits = super::to_u8arr(v);
+					return ReadResult::ReadDone;
+				}
+				"EntropyInputPR" 		=> {
+					// "Prediction Resistance" is not supported
+					return ReadResult::ReadError;
 				}
 				_ => return ReadResult::ReadMore,
 			}
@@ -289,9 +321,11 @@ pub mod reader {
 		pub dh: Dh,
 		pub hmac: Hmac,
 		pub kdf: Kdf,
+		pub drbg: Drbg,
 	}
 
 	impl TestVector {
+
 		fn new(id: u32) -> Self {
 			let mut el: TestVector = Default::default();
 			el.scheme_id = id;
@@ -306,6 +340,7 @@ pub mod reader {
 			    AlgType::AlgDh => self.dh.parse_element(k, v),
 			    AlgType::AlgHmac => self.hmac.parse_element(k, v),
 			    AlgType::AlgKdf => self.kdf.parse_element(k, v),
+			    AlgType::AlgDrbg => self.drbg.parse_element(k, v),
 			}
 		}
 
@@ -313,16 +348,27 @@ pub mod reader {
 			self.sections = s.clone();
 		}
 
-		pub fn has_same_sections(&self, s: &Vec<&str>) -> bool {
-			if s.len() != self.sections.len() {
-				return false;
-			}
-			for i in s.iter() {
-				if !self.sections.contains(&i.to_string()) {
-					return false;
+		fn check_sections(&self, s: &Vec<&str>, res: Ordering, exp: Ordering) -> bool {
+			if res == exp {
+				for i in s.iter() {
+					if !self.sections.contains(&i.to_string()) {
+						return false;
+					}
 				}
+				return true;
 			}
-			return true;
+			return false;
+		}
+
+		pub fn has_same_sections(&self, s: &Vec<&str>) -> bool {
+			let res = s.len().cmp(&self.sections.len());
+			return self.check_sections(s, res, Ordering::Equal);
+		}
+
+		pub fn contains_sections(&self, s: &Vec<&str>) -> bool {
+			let res = s.len().cmp(&self.sections.len());
+			return self.check_sections(s, res, Ordering::Less)
+				|| self.check_sections(s, res, Ordering::Equal);
 		}
 	}
 
@@ -568,7 +614,7 @@ Output = aabbccdd2ca436e805c6b3db2251a9bc
 	}
 
 	#[test]
-	fn test_select_from_multisections() {
+	fn test_select_from_multisections_check_equal_sections() {
 		let ex = "
 #  CAVS 19.0
 # This block must be selected
@@ -602,6 +648,40 @@ Output = 3109d9472ca436e8
 	}
 
 	#[test]
+	fn test_select_from_multisections_check_contains_sections() {
+		let ex = "
+#  CAVS 19.0
+# This block must be selected
+[Outputlen = 128]
+
+Len = 2696
+Msg = a6fe00064257aa318b621c5eb311d32bb8004c2fa1a969d205d71762cc5d2e633907992629d1b69d9557ff6d5e8deb454ab00f6e497c89a4fea09e257a6fa2074bd818ceb5981b3e3faefd6e720f2d1edd9c5e4a5c51e5009abf636ed5bca53fe159c8287014a1bd904f5c8a7501625f79ac81eb618f478ce21cae6664acffb30572f059e1ad0fc2912264e8f1ca52af26c8bf78e09d75f3dd9fc734afa8770abe0bd78c90cc2ff448105fb16dd2c5b7edd8611a62e537db9331f5023e16d6ec150cc6e706d7c7fcbfff930c7281831fd5c4aff86ece57ed0db882f59a5fe403105d0592ca38a081fed84922873f538ee774f13b8cc09bd0521db4374aec69f4bae6dcb66455822c0b84c91a3474ffac2ad06f0a4423cd2c6a49d4f0d6242d6a1890937b5d9835a5f0ea5b1d01884d22a6c1718e1f60b3ab5e232947c76ef70b344171083c688093b5f1475377e3069863
+Output = 3109d9472ca436e805c6b3db2251a9bc
+[Outputlen = 64]
+[TEST = 1]
+
+Len = 2696
+Msg = deadbeef
+Output = 3109d9472ca436e8
+";
+		let mut found = false;
+		let r = KatReader::new(
+			std::io::BufReader::new(Cursor::new(ex)),
+			AlgType::AlgXof, 1);
+
+		let mut count = 0;
+		for el in r {
+			count += 1;
+			if el.contains_sections(&vec![&"Outputlen = 64"]) {
+				assert_eq!(el.xof.output[0..3], [0x31, 0x09, 0xD9]);
+				assert_eq!(count, 2);
+				found = true;
+			}
+		}
+		assert!(found);
+	}
+
+	#[test]
 	fn test_dh_parsing() {
 		let ex = "
 COUNT = 21
@@ -625,6 +705,35 @@ ZIUT = 46fc62106420ff012e54a434fbdd2d25ccc5852060561e68040dd7778997bd7b
 			assert_eq!(el.dh.secret_key[0..3], [0x7D,0x7D,0xC5]);
 			assert_eq!(el.dh.shared_secret[0..3], [0x46,0xFC,0x62]);
 			assert_eq!(el.dh.count, 21);
+		}
+	}
+	#[test]
+	fn test_drbg() {
+		let ex = "
+COUNT = 10
+EntropyInput = bfb68be4ce1756d25bdfad5e0c2f8bec29360901cc4da51d423d1591cc57e1ba
+Nonce = 98afe4bd194c143e099680c504cceaab
+PersonalizationString =
+EntropyInputReseed = b97caf210e82498c3408790d41c320dd4a72007778389b44b7bc3c1c4b8c53f8
+AdditionalInputReseed =
+AdditionalInput = aabb
+AdditionalInput = ccdd
+ReturnedBits = 409e0aa949fb3b38231bf8732e7959e943a338ea399026b744df15cbfeff8d71b3da023dcce059a88cf0d4b7475f628e4764c8bef13c70cfbbbb6da2a18aabcad919db09d04fc59765edb165147c88dd473a0f3c5ee19237ca955697e001ba654c5ee0bd26761b49333154426bc63286298a8be634fe0d72cfdeef0f3fc48eca
+";
+
+		let r = KatReader::new(
+			std::io::BufReader::new(Cursor::new(ex)),
+			AlgType::AlgDrbg, 1);
+
+		for mut el in r {
+			assert_eq!(el.drbg.count, 10);
+			assert_eq!(el.drbg.entropy_input[0..3], [0xbf,0xb6,0x8b]);
+			assert_eq!(el.drbg.nonce[0..3], [0x98,0xaf,0xe4]);
+			assert_eq!(el.drbg.personalization.len(), 0);
+			assert_eq!(el.drbg.entropy_input_reseed[0..3], [0xb9,0x7c,0xaf]);
+			assert_eq!(el.drbg.additional_input.pop_front().unwrap()[0..2], [0xaa,0xbb]);
+			assert_eq!(el.drbg.additional_input.pop_front().unwrap()[0..2], [0xcc,0xdd]);
+			assert_eq!(el.drbg.returned_bits[0..3], [0x40,0x9e,0x0a]);
 		}
 	}
 }

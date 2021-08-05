@@ -12,6 +12,7 @@ allows to bind an action for each test vector supplied by calling code.
 | HMAC      | FIPS-198 |
 | Diffie-Hellman | SP 800-56A |
 | KDF | SP 800-108 |
+| DRBG      | SP 800-90A (without Prediction Resistance) |
 | NIST PQC  | All KEM & Signature schemes  |
 
 ## Example
