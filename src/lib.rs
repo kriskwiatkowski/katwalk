@@ -13,11 +13,18 @@ fn to_usize(s: &str) -> usize {
 
 // Converts hex in txt, to an array of bytes
 fn to_u8arr(s: &str) -> Vec<u8> {
-	match Vec::from_hex(s) {
+	let mut t = String::from(s);
+	// from_hex requres that hex is properly formated
+	// Numbers in FIPS186-4 have 131 digits, so prepend
+	// with 0.
+	if t.len() % 2 != 0 {
+		t.insert_str(0, "0");
+	}
+	match Vec::from_hex(t) {
 		Ok(v) => v,
 		// Panic here is good, because when execution is
 		// here it means all checks should be already done.
-		Err(e) => panic!("{}", e)
+		Err(e) => panic!("{}", e),
 	}
 }
 
@@ -29,6 +36,7 @@ pub mod reader {
 	#[derive(Copy, Clone)]
 	pub enum AlgType {
 		AlgSignature,
+		AlgEcdsaSignature, // TODO: needs merging with AlgSignature
 		AlgKem,
 		AlgHash,
 		AlgXof,
@@ -48,6 +56,11 @@ pub mod reader {
 		pub sk: Vec<u8>,
 		pub smlen: usize,
 		pub sm: Vec<u8>
+	}
+
+	#[derive(Debug, Default)]
+	pub struct EcdsaSignature {
+		pub sign: Signature,
 	}
 
 	#[derive(Debug, Default)]
@@ -157,6 +170,26 @@ pub mod reader {
 				"smlen" => self.smlen = super::to_usize(v),
 				"sm" => {
 					self.sm = super::to_u8arr(v);
+					// Last item for the record
+					return ReadResult::ReadDone;
+				}
+				_ => return ReadResult::ReadError,
+			};
+			ReadResult::ReadMore
+		}
+	}
+
+	impl EcdsaSignature {
+		fn parse_element(self: &mut Self, k: &str, v: &str) -> ReadResult {
+			match k {
+				"Msg" => self.sign.msg = super::to_u8arr(v),
+				"d" => self.sign.sk = super::to_u8arr(v),
+				"k" => self.sign.seed = super::to_u8arr(v),
+				"Qx" => self.sign.pk = super::to_u8arr(v),
+				"Qy" => self.sign.pk.append(&mut super::to_u8arr(v).to_vec()),
+				"R"  => self.sign.sm = super::to_u8arr(v),
+				"S"  => {
+					self.sign.sm.append(&mut super::to_u8arr(v).to_vec());
 					// Last item for the record
 					return ReadResult::ReadDone;
 				}
@@ -315,6 +348,7 @@ pub mod reader {
 		pub scheme_id: u32,
 		pub sections: HashSet<String>,
 		pub sig: Signature,
+		pub ecdsa_sig: EcdsaSignature,
 		pub kem: Kem,
 		pub hash: Hash,
 		pub xof: Xof,
@@ -335,6 +369,7 @@ pub mod reader {
 			return match t {
 				AlgType::AlgKem => self.kem.parse_element(k, v),
 			    AlgType::AlgSignature => self.sig.parse_element(k, v),
+			    AlgType::AlgEcdsaSignature => self.ecdsa_sig.parse_element(k, v),
 			    AlgType::AlgHash => self.hash.parse_element(k, v),
 			    AlgType::AlgXof => self.xof.parse_element(k, v),
 			    AlgType::AlgDh => self.dh.parse_element(k, v),
@@ -441,7 +476,6 @@ pub mod reader {
 					},
 				}
 			}
-
 			return Ok(vectors);
 		}
 
