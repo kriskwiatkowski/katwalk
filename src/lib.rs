@@ -37,6 +37,7 @@ pub mod reader {
 	pub enum AlgType {
 		AlgSignature,
 		AlgEcdsaSignature, // TODO: needs merging with AlgSignature
+		AlgEcKey,
 		AlgKem,
 		AlgHash,
 		AlgXof,
@@ -61,6 +62,12 @@ pub mod reader {
 	#[derive(Debug, Default)]
 	pub struct EcdsaSignature {
 		pub sign: Signature,
+	}
+
+	#[derive(Debug, Default)]
+	pub struct EcdsaPublicKeyValidation {
+		pub pk: Vec<u8>,
+		pub result: char,
 	}
 
 	#[derive(Debug, Default)]
@@ -191,6 +198,25 @@ pub mod reader {
 				"S"  => {
 					self.sign.sm.append(&mut super::to_u8arr(v).to_vec());
 					// Last item for the record
+					return ReadResult::ReadDone;
+				}
+				_ => return ReadResult::ReadError,
+			};
+			ReadResult::ReadMore
+		}
+	}
+
+	impl EcdsaPublicKeyValidation {
+		fn parse_element(self: &mut Self, k: &str, v: &str) -> ReadResult {
+			match k {
+				"Qx" => self.pk = super::to_u8arr(v),
+				"Qy" => self.pk.append(&mut super::to_u8arr(v).to_vec()),
+				"Result"  => {
+					let s = v.to_string();
+					self.result = match s.trim_start().chars().nth(0) {
+						Some(val) => val,
+						None => 'E'
+					};
 					return ReadResult::ReadDone;
 				}
 				_ => return ReadResult::ReadError,
@@ -349,6 +375,7 @@ pub mod reader {
 		pub sections: HashSet<String>,
 		pub sig: Signature,
 		pub ecdsa_sig: EcdsaSignature,
+		pub ecpkv: EcdsaPublicKeyValidation,
 		pub kem: Kem,
 		pub hash: Hash,
 		pub xof: Xof,
@@ -370,6 +397,7 @@ pub mod reader {
 				AlgType::AlgKem => self.kem.parse_element(k, v),
 			    AlgType::AlgSignature => self.sig.parse_element(k, v),
 			    AlgType::AlgEcdsaSignature => self.ecdsa_sig.parse_element(k, v),
+			    AlgType::AlgEcKey => self.ecpkv.parse_element(k, v),
 			    AlgType::AlgHash => self.hash.parse_element(k, v),
 			    AlgType::AlgXof => self.xof.parse_element(k, v),
 			    AlgType::AlgDh => self.dh.parse_element(k, v),
@@ -769,5 +797,23 @@ ReturnedBits = 409e0aa949fb3b38231bf8732e7959e943a338ea399026b744df15cbfeff8d71b
 			assert_eq!(el.drbg.additional_input.pop_front().unwrap()[0..2], [0xcc,0xdd]);
 			assert_eq!(el.drbg.returned_bits[0..3], [0x40,0x9e,0x0a]);
 		}
+	}
+
+	#[test]
+	fn test_pkv() {
+		let ex = "
+Qx = d17c446237d9df87266ba3a91ff27f45abfdcb77bfd83536e92903efb861a9a9
+Qy = 1eabb6a349ce2cd447d777b6739c5fc066add2002d2029052c408d0701066231c
+Result = F (1 - Q_x or Q_y out of range)
+";
+		let r = KatReader::new(
+			std::io::BufReader::new(Cursor::new(ex)),
+			AlgType::AlgEcKey, 1);
+
+		for el in r {
+			assert_eq!(el.ecpkv.pk[0..3], [0xd1,0x7c,0x44]);
+			assert_eq!(el.ecpkv.result, 'F');
+		}
+
 	}
 }
