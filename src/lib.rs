@@ -36,8 +36,11 @@ pub mod reader {
     #[derive(Copy, Clone)]
     pub enum AlgType {
         AlgSignature,
+        // TODO: both need merging with AlgSignature. To avoid a need for both
+        //       we should parse whole section from 'count' to next 'count' (or end),
+        //       then sort by key, find the last one and then parse it.
         AlgSignatureWithCtx,
-        AlgEcdsaSignature, // TODO: needs merging with AlgSignature
+        AlgEcdsaSignature,
         AlgEcKey,
         AlgKem,
         AlgHash,
