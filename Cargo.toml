@@ -1,12 +1,12 @@
 [package]
-name = "acvp-cli"
-version = "0.0.1"
+name = "katwalk"
+version = "0.0.14"
 edition = "2021"
 authors = ["Krzysztof Kwiatkowski"]
-description = "ACVP client for testing cryptographic implementations against KAT vectors"
+description = "Client for testing cryptographic implementations against KAT vectors"
 license = "MIT OR Apache-2.0"
-repository = "https://git.amongbytes.com/AmongBytes/acvp-cli"
-homepage = "https://git.amongbytes.com/AmongBytes/acvp-cli"
+repository = "https://github.com/kriskwiatkowski/katwalk"
+homepage = "https://github.com/kriskwiatkowski/katwalk"
 
 
 [dependencies]

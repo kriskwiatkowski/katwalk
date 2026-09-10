@@ -1,8 +1,8 @@
 // ACVP binary-protocol wrapper around the hqckem-ref library.
-// See acvp_cli::modulewrapper for the shared stdin/stdout framing.
+// See katwalk::modulewrapper for the shared stdin/stdout framing.
 
-use acvp_cli::modulewrapper;
 use hqc::{decaps, encaps, keygen, HqcParams};
+use katwalk::modulewrapper;
 use sha3::{
     digest::{ExtendableOutput, Update, XofReader},
     Shake256,
