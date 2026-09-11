@@ -3,14 +3,14 @@ name: Release Build
 on:
   push:
     tags:
-      - 'v*.*.*'
-      - 'acvp-cli-v*.*.*'
+      - "v*.*.*"
+      - "katwalk-v*.*.*"
   workflow_dispatch:
     inputs:
       version:
-        description: 'Version tag (e.g., v1.6.7)'
+        description: "Version tag (e.g., v1.6.7)"
         required: true
-        default: 'v1.6.7'
+        default: "v1.6.7"
 
 env:
   CARGO_TERM_COLOR: always
@@ -24,24 +24,24 @@ jobs:
         include:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-            artifact_name: acvp-cli
-            asset_name: acvp-cli-linux-x86_64
+            artifact_name: katwalk
+            asset_name: katwalk-linux-x86_64
           - os: ubuntu-latest
             target: x86_64-unknown-linux-musl
-            artifact_name: acvp-cli
-            asset_name: acvp-cli-linux-x86_64-musl
+            artifact_name: katwalk
+            asset_name: katwalk-linux-x86_64-musl
           - os: macos-latest
             target: x86_64-apple-darwin
-            artifact_name: acvp-cli
-            asset_name: acvp-cli-macos-x86_64
+            artifact_name: katwalk
+            asset_name: katwalk-macos-x86_64
           - os: macos-latest
             target: aarch64-apple-darwin
-            artifact_name: acvp-cli
-            asset_name: acvp-cli-macos-aarch64
+            artifact_name: katwalk
+            asset_name: katwalk-macos-aarch64
           - os: windows-latest
             target: x86_64-pc-windows-msvc
-            artifact_name: acvp-cli.exe
-            asset_name: acvp-cli-windows-x86_64.exe
+            artifact_name: katwalk.exe
+            asset_name: katwalk-windows-x86_64.exe
 
     steps:
       - uses: actions/checkout@v4
@@ -99,54 +99,29 @@ jobs:
           prerelease: false
           generateReleaseNotes: true
           body: |
-            ## acvp-cli Release ${{ github.ref_name }}
+            ## katwalk Release ${{ github.ref_name }}
 
             ### Downloads
 
             Choose the appropriate binary for your platform:
 
-            - **Linux (glibc)**: `acvp-cli-linux-x86_64`
-            - **Linux (musl)**: `acvp-cli-linux-x86_64-musl` (static, no dependencies)
-            - **macOS (Intel)**: `acvp-cli-macos-x86_64`
-            - **macOS (Apple Silicon)**: `acvp-cli-macos-aarch64`
-            - **Windows**: `acvp-cli-windows-x86_64.exe`
+            - **Linux (glibc)**: `katwalk-linux-x86_64`
+            - **Linux (musl)**: `katwalk-linux-x86_64-musl` (static, no dependencies)
+            - **macOS (Intel)**: `katwalk-macos-x86_64`
+            - **macOS (Apple Silicon)**: `katwalk-macos-aarch64`
+            - **Windows**: `katwalk-windows-x86_64.exe`
 
             ### Verification
 
             Verify your download with the provided SHA256 checksums:
             ```bash
-            sha256sum -c acvp-cli-linux-x86_64.sha256
+            sha256sum -c katwalk-linux-x86_64.sha256
             ```
 
             ### Installation
 
             Linux/macOS:
             ```bash
-            chmod +x acvp-cli-*
-            sudo mv acvp-cli-* /usr/local/bin/acvp-cli
+            chmod +x katwalk-*
+            sudo mv katwalk-* /usr/local/bin/katwalk
             ```
-
-  docker-build:
-    name: Build Docker Image
-    needs: build-release
-    runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/')
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        with:
-          name: acvp-cli-linux-x86_64-musl
-          path: ./docker
-      - uses: docker/setup-buildx-action@v3
-      - name: Build Docker image
-        run: |
-          cd docker
-          chmod +x acvp-cli
-          docker build -t acvp-cli:${{ github.ref_name }} -f ../Dockerfile .
-          docker tag acvp-cli:${{ github.ref_name }} acvp-cli:latest
-      - name: Save Docker image
-        run: docker save acvp-cli:${{ github.ref_name }} | gzip > acvp-cli-docker-${{ github.ref_name }}.tar.gz
-      - uses: actions/upload-artifact@v4
-        with:
-          name: docker-image
-          path: acvp-cli-docker-${{ github.ref_name }}.tar.gz

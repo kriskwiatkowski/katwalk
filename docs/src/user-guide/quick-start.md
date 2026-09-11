@@ -1,6 +1,6 @@
 # Quick Start
 
-Get up and running with acvp-cli in minutes.
+Get up and running with katwalk in minutes.
 
 ## Prerequisites
 
@@ -14,7 +14,7 @@ See [Installation](installation.md).
 ## 1. Query Module Capabilities
 
 ```bash
-./target/release/acvp-cli \
+./target/release/katwalk \
   --wrapper ../build/modulewrapper/modulewrapper \
   --regcap
 ```
@@ -26,7 +26,7 @@ This prints the cryptographic capabilities of your module as JSON.
 Run a vector set against a wrapper and write the responses to a file:
 
 ```bash
-./target/release/acvp-cli \
+./target/release/katwalk \
   --wrapper ../build/modulewrapper/modulewrapper \
   --in test_vectors.json \
   --out responses.json
@@ -38,7 +38,7 @@ Add `--expected` to compare the generated responses against a known-good expecte
 Exit code is non-zero on any mismatch:
 
 ```bash
-./target/release/acvp-cli \
+./target/release/katwalk \
   --wrapper ../build/modulewrapper/modulewrapper \
   --in  prompt.json \
   --out responses.json \
@@ -61,7 +61,7 @@ Error: 1/42 field(s) did not match
 ## 4. Process a Directory of Vector Sets
 
 ```bash
-./target/release/acvp-cli \
+./target/release/katwalk \
   --wrapper ../build/modulewrapper/modulewrapper \
   --indir  ./test_vectors/ \
   --outdir ./responses/
@@ -71,25 +71,25 @@ Every `.json` and `.zip` file in `--indir` is processed; output files land in `-
 
 ## ML-KEM with the Built-in Wrapper
 
-`acvp-cli` ships a self-contained `mlkem_wrapper` binary (backed by the `mlkem-edu` library) so you can test ML-KEM without the C++ modulewrapper:
+`katwalk` ships a self-contained `mlkem_wrapper` binary (backed by the `mlkem-edu` library) so you can test ML-KEM without the C++ modulewrapper:
 
 ```bash
 cargo build --release
 
 # Generate responses
-./target/release/acvp-cli \
+./target/release/katwalk \
   --wrapper ./target/release/mlkem_wrapper \
   --in  /path/to/ML-KEM-keyGen-FIPS203/prompt.json \
   --out /tmp/keygen_responses.json
 
 # Generate and verify in one step
-./target/release/acvp-cli \
+./target/release/katwalk \
   --wrapper ./target/release/mlkem_wrapper \
   --in  /path/to/ML-KEM-keyGen-FIPS203/prompt.json \
   --out /tmp/keygen_responses.json \
   --expected /path/to/ML-KEM-keyGen-FIPS203/expectedResults.json
 
-./target/release/acvp-cli \
+./target/release/katwalk \
   --wrapper ./target/release/mlkem_wrapper \
   --in  /path/to/ML-KEM-encapDecap-FIPS203/prompt.json \
   --out /tmp/encapdecap_responses.json \

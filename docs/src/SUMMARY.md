@@ -16,12 +16,6 @@
   - [Algorithm Support](reference/technical.md#algorithm-primitives)
 - [API Reference](reference/api.md)
 
-# Development
-
-- [Building from Source](development/building.md)
-- [Contributing](development/contributing.md)
-- [Publishing to Gitea](development/publishing.md)
-
 # Appendix
 
 - [Project Summary](appendix/project-summary.md)

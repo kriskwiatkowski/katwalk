@@ -1,6 +1,6 @@
 [package]
 name = "katwalk"
-version = "0.0.14"
+version = "0.0.15"
 edition = "2021"
 authors = ["Krzysztof Kwiatkowski"]
 description = "Client for testing cryptographic implementations against KAT vectors"
@@ -34,7 +34,7 @@ log = "0.4"
 env_logger = "0.11"
 
 [[bin]]
-name = "acvp-cli"
+name = "katwalk"
 path = "src/main.rs"
 
 [[bin]]

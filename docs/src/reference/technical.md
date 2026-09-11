@@ -2,12 +2,12 @@
 
 ## Overview
 
-acvp-cli is a Rust implementation of an ACVP (Automated Cryptographic Validation Protocol) test harness. It processes cryptographic test vectors from JSON or ZIP files, forwards operations to an external wrapper binary over a binary protocol, and optionally verifies responses against known-good expected results.
+katwalk is a Rust implementation of an ACVP (Automated Cryptographic Validation Protocol) test harness. It processes cryptographic test vectors from JSON or ZIP files, forwards operations to an external wrapper binary over a binary protocol, and optionally verifies responses against known-good expected results.
 
 ## Project Structure
 
 ```
-acvp-cli/
+katwalk/
 ├── src/
 │   ├── main.rs                    # CLI entry point and orchestration
 │   ├── config.rs                  # Configuration file parsing
@@ -74,7 +74,7 @@ Parameter sets: `ML-KEM-512`, `ML-KEM-768`, `ML-KEM-1024`.
 `src/bin/mlkem_wrapper.rs` is a self-contained wrapper binary that implements the protocol above using the `mlkem-edu` Rust library (FIPS 203). It can replace the C++ modulewrapper for ML-KEM-only workloads:
 
 ```bash
-acvp-cli --wrapper ./target/release/mlkem_wrapper --in prompt.json --out out.json
+katwalk --wrapper ./target/release/mlkem_wrapper --in prompt.json --out out.json
 ```
 
 ### Key Sizes (FIPS 203)

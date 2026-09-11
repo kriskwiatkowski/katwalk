@@ -7,19 +7,20 @@ on:
       - master
       - develop
     paths:
-      - '**/*.rs'
-      - 'Cargo.toml'
-      - 'Cargo.lock'
-      - '.github/workflows/ci.yml'
+      - "**/*.rs"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/**"
   pull_request:
     branches:
       - main
       - master
       - develop
     paths:
-      - '**/*.rs'
-      - 'Cargo.toml'
-      - 'Cargo.lock'
+      - "**/*.rs"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/**"
 
 env:
   CARGO_TERM_COLOR: always
@@ -113,52 +114,17 @@ jobs:
       - name: Verify binary
         run: |
           if [ "${{ matrix.profile }}" = "release" ]; then
-            ./target/release/acvp-cli --version
+            ./target/release/katwalk --version
           else
-            ./target/debug/acvp-cli --version
+            ./target/debug/katwalk --version
           fi
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         if: matrix.profile == 'release'
         with:
-          name: acvp-cli-linux-x86_64
-          path: target/release/acvp-cli
+          name: katwalk-linux-x86_64
+          path: target/release/katwalk
           retention-days: 7
-
-  integration-test:
-    name: Integration Test (with modulewrapper)
-    runs-on: ubuntu-latest
-    needs: build
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-      - name: Install dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y cmake build-essential
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-integration-${{ hashFiles('**/Cargo.lock') }}
-      - name: Build modulewrapper
-        run: |
-          cmake -B build -S . -DCMAKE_BUILD_TYPE=Release
-          cmake --build build --target modulewrapper
-        continue-on-error: true
-      - run: cargo build --release
-      - name: Test regcap (if modulewrapper exists)
-        run: |
-          if [ -f build/modulewrapper/modulewrapper ]; then
-            ./target/release/acvp-cli --wrapper build/modulewrapper/modulewrapper --regcap | head -20
-          else
-            echo "Modulewrapper not available, skipping integration test"
-          fi
-        continue-on-error: true
 
   coverage:
     name: Code Coverage

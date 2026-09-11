@@ -1,4 +1,4 @@
-# acvp-cli - Project Summary
+# katwalk - Project Summary
 
 ## Overview
 
@@ -105,7 +105,7 @@ make
 ### Query Capabilities
 
 ```bash
-./target/release/acvp-cli \
+./target/release/katwalk \
   --wrapper ../build/modulewrapper/modulewrapper \
   --regcap
 ```
@@ -113,7 +113,7 @@ make
 ### Process Test Vectors
 
 ```bash
-./target/release/acvp-cli \
+./target/release/katwalk \
   --wrapper ../build/modulewrapper/modulewrapper \
   --in test_vectors.json \
   --out responses.json
@@ -122,7 +122,7 @@ make
 ### Batch Processing
 
 ```bash
-./target/release/acvp-cli \
+./target/release/katwalk \
   --wrapper ../build/modulewrapper/modulewrapper \
   --indir test_vectors/ \
   --outdir responses/
@@ -155,17 +155,6 @@ cargo fmt
 
 # Lint
 cargo clippy
-```
-
-### Quick Test
-
-```bash
-# From parent directory, build modulewrapper first
-cmake --build build --target modulewrapper
-
-# Then test Rust tool
-cd acvp-rust
-make test-regcap
 ```
 
 ## Architecture Highlights
