@@ -1,11 +1,11 @@
 # API Reference
 
-This page documents the internal APIs and interfaces of acvp-cli.
+This page documents the internal APIs and interfaces of katwalk.
 
 ## Module Structure
 
 ```
-acvp-cli/
+katwalk/
 ├── main.rs          - CLI entry point
 ├── config.rs        - Configuration handling
 ├── utils.rs         - Utility functions
@@ -355,21 +355,21 @@ See `Args` struct in `main.rs`:
 
 ```rust
 #[derive(Parser)]
-#[command(name = "acvp-cli")]
+#[command(name = "katwalk")]
 #[command(about = "ACVP client for testing cryptographic implementations")]
 struct Args {
     #[arg(long)]
     regcap: bool,
-    
+
     #[arg(short, long, default_value = "config.json")]
     config: String,
-    
+
     #[arg(long)]
     in_file: Option<PathBuf>,
-    
+
     #[arg(long)]
     out: Option<PathBuf>,
-    
+
     // ... more fields
 }
 ```

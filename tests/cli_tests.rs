@@ -7,18 +7,18 @@ use tempfile::TempDir;
 
 #[test]
 fn test_cli_help() {
-    let mut cmd = Command::cargo_bin("acvp-cli").unwrap();
+    let mut cmd = Command::cargo_bin("katwalk").unwrap();
     cmd.arg("--help");
 
     cmd.assert()
         .success()
-        .stdout(predicate::str::contains("ACVP client"))
+        .stdout(predicate::str::contains("katwalk"))
         .stdout(predicate::str::contains("--wrapper"));
 }
 
 #[test]
 fn test_cli_version() {
-    let mut cmd = Command::cargo_bin("acvp-cli").unwrap();
+    let mut cmd = Command::cargo_bin("katwalk").unwrap();
     cmd.arg("--version");
 
     cmd.assert()
@@ -28,7 +28,7 @@ fn test_cli_version() {
 
 #[test]
 fn test_cli_missing_wrapper() {
-    let mut cmd = Command::cargo_bin("acvp-cli").unwrap();
+    let mut cmd = Command::cargo_bin("katwalk").unwrap();
     cmd.arg("--regcap");
 
     // Should fail because --wrapper is required
@@ -37,7 +37,7 @@ fn test_cli_missing_wrapper() {
 
 #[test]
 fn test_cli_invalid_wrapper_path() {
-    let mut cmd = Command::cargo_bin("acvp-cli").unwrap();
+    let mut cmd = Command::cargo_bin("katwalk").unwrap();
     cmd.arg("--wrapper")
         .arg("/nonexistent/wrapper")
         .arg("--regcap");
@@ -47,7 +47,7 @@ fn test_cli_invalid_wrapper_path() {
 
 #[test]
 fn test_cli_in_without_out() {
-    let mut cmd = Command::cargo_bin("acvp-cli").unwrap();
+    let mut cmd = Command::cargo_bin("katwalk").unwrap();
     cmd.arg("--wrapper")
         .arg("/tmp/dummy")
         .arg("--in")
@@ -59,7 +59,7 @@ fn test_cli_in_without_out() {
 
 #[test]
 fn test_cli_indir_without_outdir() {
-    let mut cmd = Command::cargo_bin("acvp-cli").unwrap();
+    let mut cmd = Command::cargo_bin("katwalk").unwrap();
     cmd.arg("--wrapper")
         .arg("/tmp/dummy")
         .arg("--indir")

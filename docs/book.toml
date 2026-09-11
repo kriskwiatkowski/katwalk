@@ -1,5 +1,5 @@
 [book]
-title = "acvp-cli Documentation"
+title = "katwalk Documentation"
 authors = ["Krzysztof Kwiatkowski"]
 language = "en"
 src = "src"
@@ -9,8 +9,8 @@ src = "src"
 [output.html]
 default-theme = "rust"
 preferred-dark-theme = "navy"
-git-repository-url = "https://git.amongbytes.com/AmongBytes/acvp-cli"
-edit-url-template = "https://git.amongbytes.com/AmongBytes/acvp-cli/edit/main/docs/{path}"
+git-repository-url = "https://github.com/kriskwiatkowski/katwalk"
+edit-url-template = "https://github.com/kriskwiatkowski/katwalk/edit/main/docs/{path}"
 
 [output.html.fold]
 enable = true
