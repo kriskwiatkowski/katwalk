@@ -1,7 +1,7 @@
 // ACVP binary-protocol wrapper around the mlkem-ref library.
-// See acvp_cli::modulewrapper for the shared stdin/stdout framing.
+// See katwalk::modulewrapper for the shared stdin/stdout framing.
 
-use acvp_cli::modulewrapper;
+use katwalk::modulewrapper;
 use mlkem_ref::{check_dk, check_ek, ml_kem_decaps, ml_kem_encaps, ml_kem_keygen, MLKEMParameters};
 
 fn params(name: &[u8]) -> Result<MLKEMParameters, String> {
