@@ -4,8 +4,10 @@ Get up and running with katwalk in minutes.
 
 ## Prerequisites
 
-- Rust 1.70 or later ([install via rustup](https://rustup.rs))
-- A modulewrapper binary (either an external C++ modulewrapper, or the built-in `mlkem_wrapper` for ML-KEM)
+- Rust 1.85 or later (required by the built-in ML-DSA implementation;
+  [install via rustup](https://rustup.rs))
+- A modulewrapper binary (either an external C++ modulewrapper, or a built-in
+  wrapper for ML-KEM or ML-DSA)
 
 ## Installation
 
@@ -69,6 +71,40 @@ Error: 1/42 field(s) did not match
 
 Every `.json` and `.zip` file in `--indir` is processed; output files land in `--outdir` with the same name.
 
+## 5. Process a Test-Set Manifest
+
+Use `--testset` to run several input/expected-result pairs in one invocation.
+Paths in the manifest are resolved relative to the manifest file:
+
+```json
+{
+  "tests": [
+    {
+      "in": "SHA3-256/prompt.json",
+      "expected": "SHA3-256/expectedResults.json"
+    },
+    {
+      "in": "SHAKE-128/prompt.json",
+      "expected": "SHAKE-128/expectedResults.json",
+      "out": "responses/shake-128.json"
+    }
+  ]
+}
+```
+
+Each entry is verified against its `expected` file. An entry's optional `out`
+stores its response relative to the manifest; otherwise, responses are only
+verified unless `--outdir` is supplied. With `--outdir`, entries without `out`
+write a response using their input file name. Test-set output paths must be
+unique and must not already exist.
+
+```bash
+./target/release/katwalk \
+  --wrapper ./target/release/fips202_wrapper \
+  --testset /path/to/fips202-testset.json \
+  --outdir /tmp/fips202-responses
+```
+
 ## ML-KEM with the Built-in Wrapper
 
 `katwalk` ships a self-contained `mlkem_wrapper` binary (backed by the `mlkem-edu` library) so you can test ML-KEM without the C++ modulewrapper:
@@ -107,7 +143,8 @@ Both vector sets print `PASS` when all 240 FIPS-203 test cases match.
 | `--out <file>` | Output responses file |
 | `--expected <file>` | Expected results file; enables verification |
 | `--indir <dir>` | Input directory (batch mode) |
-| `--outdir <dir>` | Output directory (batch mode) |
+| `--outdir <dir>` | Output directory for `--indir` or `--testset` |
+| `--testset <file>` | JSON manifest of input/expected vector-set pairs |
 | `--regcap` | Print module capabilities and exit |
 | `--param <string>` | Optional argument forwarded to the wrapper |
 | `--config <file>` | Config file for ACVP server mode (default: `config.json`) |

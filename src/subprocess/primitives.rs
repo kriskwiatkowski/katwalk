@@ -2,8 +2,12 @@ use super::Subprocess;
 use anyhow::{Context, Result};
 use serde_json::{json, Value};
 
+/// Processes fixed-output hashes that are not implemented by the dedicated
+/// FIPS-202 adapter.
 pub fn process_hash(subprocess: &mut Subprocess, vector_set: &Value) -> Result<Value> {
-    let algorithm = vector_set["algorithm"].as_str().unwrap();
+    let algorithm = vector_set["algorithm"]
+        .as_str()
+        .context("Missing algorithm")?;
     let test_groups = vector_set["testGroups"]
         .as_array()
         .context("Missing testGroups")?;
@@ -11,46 +15,13 @@ pub fn process_hash(subprocess: &mut Subprocess, vector_set: &Value) -> Result<V
     let mut response_groups = Vec::new();
 
     for group in test_groups {
-        let tests = group["tests"].as_array().context("Missing tests")?;
-        let mut response_tests = Vec::new();
-
-        for test in tests {
-            let test_id = test["tcId"].as_u64().context("Missing tcId")?;
-            let msg_hex = test["msg"].as_str().context("Missing msg")?;
-            let msg = hex::decode(msg_hex).context("Invalid hex in msg")?;
-
-            let results = subprocess.transact(algorithm, &[&msg])?;
-            let md = hex::encode(&results[0]);
-
-            response_tests.push(json!({
-                "tcId": test_id,
-                "md": md
-            }));
+        if group["testType"].as_str() != Some("AFT") {
+            anyhow::bail!(
+                "{algorithm} test group {} has unsupported testType {:?}",
+                group["tgId"],
+                group["testType"]
+            );
         }
-
-        response_groups.push(json!({
-            "tgId": group["tgId"],
-            "tests": response_tests
-        }));
-    }
-
-    Ok(json!({
-        "vsId": vector_set["vsId"],
-        "algorithm": algorithm,
-        "revision": vector_set["revision"],
-        "testGroups": response_groups
-    }))
-}
-
-pub fn process_xof(subprocess: &mut Subprocess, vector_set: &Value) -> Result<Value> {
-    let algorithm = vector_set["algorithm"].as_str().unwrap();
-    let test_groups = vector_set["testGroups"]
-        .as_array()
-        .context("Missing testGroups")?;
-
-    let mut response_groups = Vec::new();
-
-    for group in test_groups {
         let tests = group["tests"].as_array().context("Missing tests")?;
         let mut response_tests = Vec::new();
 
@@ -58,11 +29,21 @@ pub fn process_xof(subprocess: &mut Subprocess, vector_set: &Value) -> Result<Va
             let test_id = test["tcId"].as_u64().context("Missing tcId")?;
             let msg_hex = test["msg"].as_str().context("Missing msg")?;
             let msg = hex::decode(msg_hex).context("Invalid hex in msg")?;
+            let bit_len = test["len"].as_u64().context("Missing len")?;
+            if bit_len % 8 != 0 || bit_len / 8 != msg.len() as u64 {
+                anyhow::bail!(
+                    "{algorithm} test {test_id} has unsupported non-byte-aligned message length {bit_len}"
+                );
+            }
 
-            let out_len = test["outLen"].as_u64().context("Missing outLen")? as usize;
-            let out_len_bytes = (out_len / 8).to_string();
-
-            let results = subprocess.transact(algorithm, &[&msg, out_len_bytes.as_bytes()])?;
+            let output_len = test["outLen"].as_u64().unwrap_or(0).to_le_bytes();
+            let results = subprocess.transact(algorithm, &[&msg, &output_len])?;
+            if results.len() != 1 {
+                anyhow::bail!(
+                    "{algorithm} returned {} results; expected one",
+                    results.len()
+                );
+            }
             let md = hex::encode(&results[0]);
 
             response_tests.push(json!({
@@ -205,7 +186,7 @@ pub fn process_ecdsa(_subprocess: &mut Subprocess, vector_set: &Value) -> Result
     }))
 }
 
-pub fn process_mldsa(_subprocess: &mut Subprocess, vector_set: &Value) -> Result<Value> {
+fn process_signature_stub(_subprocess: &mut Subprocess, vector_set: &Value) -> Result<Value> {
     let algorithm = vector_set["algorithm"].as_str().unwrap();
     let test_groups = vector_set["testGroups"]
         .as_array()
@@ -259,15 +240,15 @@ pub fn process_mldsa(_subprocess: &mut Subprocess, vector_set: &Value) -> Result
 }
 
 pub fn process_slhdsa(subprocess: &mut Subprocess, vector_set: &Value) -> Result<Value> {
-    process_mldsa(subprocess, vector_set)
+    process_signature_stub(subprocess, vector_set)
 }
 
 pub fn process_lms(subprocess: &mut Subprocess, vector_set: &Value) -> Result<Value> {
-    process_mldsa(subprocess, vector_set)
+    process_signature_stub(subprocess, vector_set)
 }
 
 pub fn process_xmss(subprocess: &mut Subprocess, vector_set: &Value) -> Result<Value> {
-    process_mldsa(subprocess, vector_set)
+    process_signature_stub(subprocess, vector_set)
 }
 
 pub fn process_kdf(subprocess: &mut Subprocess, vector_set: &Value) -> Result<Value> {
@@ -326,21 +307,6 @@ mod tests {
         let msg_hex = test["msg"].as_str().unwrap();
         let msg_bytes = hex::decode(msg_hex).unwrap();
         assert_eq!(msg_bytes, b"Hello");
-    }
-
-    #[test]
-    fn test_xof_output_length() {
-        let test = json!({
-            "tcId": 1,
-            "msg": "616263",
-            "outLen": 512
-        });
-
-        let out_len = test["outLen"].as_u64().unwrap();
-        assert_eq!(out_len, 512);
-
-        let out_bytes = (out_len / 8) as usize;
-        assert_eq!(out_bytes, 64);
     }
 
     #[test]
