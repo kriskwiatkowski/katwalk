@@ -1,6 +1,114 @@
 use super::Subprocess;
 use anyhow::{Context, Result};
-use serde_json::{json, Value};
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+
+#[derive(Debug, Deserialize)]
+struct VectorSet {
+    #[serde(rename = "vsId")]
+    vs_id: u64,
+    algorithm: String,
+    revision: String,
+    mode: Mode,
+    #[serde(rename = "testGroups")]
+    test_groups: Vec<TestGroup>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+enum Mode {
+    KeyGen,
+    EncapDecap,
+}
+
+#[derive(Debug, Deserialize)]
+struct TestGroup {
+    #[serde(rename = "tgId")]
+    tg_id: u64,
+    #[serde(rename = "parameterSet")]
+    parameter_set: String,
+    function: Option<Function>,
+    tests: Vec<TestCase>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+enum Function {
+    Encapsulation,
+    Decapsulation,
+    EncapsulationKeyCheck,
+    DecapsulationKeyCheck,
+}
+
+#[derive(Debug, Deserialize)]
+struct TestCase {
+    #[serde(rename = "tcId")]
+    tc_id: u64,
+    z: Option<String>,
+    d: Option<String>,
+    ek: Option<String>,
+    dk: Option<String>,
+    m: Option<String>,
+    c: Option<String>,
+}
+
+#[derive(Serialize)]
+struct Response {
+    #[serde(rename = "vsId")]
+    vs_id: u64,
+    algorithm: String,
+    revision: String,
+    #[serde(rename = "testGroups")]
+    test_groups: Vec<ResponseGroup>,
+}
+
+#[derive(Serialize)]
+struct ResponseGroup {
+    #[serde(rename = "tgId")]
+    tg_id: u64,
+    tests: Vec<ResponseTest>,
+}
+
+#[derive(Serialize)]
+struct ResponseTest {
+    #[serde(rename = "tcId")]
+    tc_id: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ek: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    dk: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    c: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    k: Option<String>,
+    #[serde(rename = "testPassed", skip_serializing_if = "Option::is_none")]
+    test_passed: Option<bool>,
+}
+
+fn decode_hex(value: Option<&str>, field: &str) -> Result<Vec<u8>> {
+    hex::decode(value.with_context(|| format!("Missing {field}"))?)
+        .with_context(|| format!("Invalid hex in {field}"))
+}
+
+fn one_result<'a>(results: &'a [Vec<u8>], command: &str) -> Result<&'a [u8]> {
+    if results.len() != 1 {
+        anyhow::bail!(
+            "{command} returned {} results; expected exactly one",
+            results.len()
+        );
+    }
+    Ok(&results[0])
+}
+
+fn two_results<'a>(results: &'a [Vec<u8>], command: &str) -> Result<(&'a [u8], &'a [u8])> {
+    if results.len() != 2 {
+        anyhow::bail!(
+            "{command} returned {} results; expected exactly two",
+            results.len()
+        );
+    }
+    Ok((&results[0], &results[1]))
+}
 
 fn check_passed(result: &[u8]) -> Result<bool> {
     match result {
@@ -11,160 +119,158 @@ fn check_passed(result: &[u8]) -> Result<bool> {
 }
 
 pub fn process_mlkem(subprocess: &mut Subprocess, vector_set: &Value) -> Result<Value> {
-    let algorithm = vector_set["algorithm"].as_str().unwrap();
-    let mode = vector_set["mode"].as_str().context("Missing mode")?;
-    let test_groups = vector_set["testGroups"]
-        .as_array()
-        .context("Missing testGroups")?;
-
-    let mut response_groups = Vec::new();
-
-    for group in test_groups {
-        let param_set = group["parameterSet"]
-            .as_str()
-            .context("Missing parameterSet")?;
-        let tests = group["tests"].as_array().context("Missing tests")?;
-        let mut response_tests = Vec::new();
-
-        for test in tests {
-            let test_id = test["tcId"].as_u64().context("Missing tcId")?;
-
-            let response_test = match mode {
-                "keyGen" => {
-                    let z = hex::decode(test["z"].as_str().context("Missing z")?)
-                        .context("Invalid hex in z")?;
-                    let d = hex::decode(test["d"].as_str().context("Missing d")?)
-                        .context("Invalid hex in d")?;
+    let vector_set: VectorSet =
+        serde_json::from_value(vector_set.clone()).context("Invalid ML-KEM vector set")?;
+    let mut response_groups = Vec::with_capacity(vector_set.test_groups.len());
+    for group in &vector_set.test_groups {
+        let mut response_tests = Vec::with_capacity(group.tests.len());
+        for test in &group.tests {
+            let response_test = match vector_set.mode {
+                Mode::KeyGen => {
+                    let z = decode_hex(test.z.as_deref(), "z")?;
+                    let d = decode_hex(test.d.as_deref(), "d")?;
                     let mut seed = z;
                     seed.extend(d);
-
-                    let results =
-                        subprocess.transact("ML-KEM/keyGen", &[param_set.as_bytes(), &seed])?;
+                    let results = subprocess
+                        .transact("ML-KEM/keyGen", &[group.parameter_set.as_bytes(), &seed])?;
                     if subprocess.check_unsupported(
                         &results,
-                        &format!("ML-KEM/keyGen for parameterSet={param_set}"),
+                        &format!("ML-KEM/keyGen for parameterSet={}", group.parameter_set),
                     ) {
                         continue;
                     }
-
-                    json!({
-                        "tcId": test_id,
-                        "ek": hex::encode(&results[0]),
-                        "dk": hex::encode(&results[1]),
-                    })
-                }
-                "encapDecap" => {
-                    let function = group["function"].as_str().context("Missing function")?;
-                    match function {
-                        "encapsulation" => {
-                            let ek = hex::decode(test["ek"].as_str().context("Missing ek")?)
-                                .context("Invalid hex in ek")?;
-                            let m = hex::decode(test["m"].as_str().context("Missing m")?)
-                                .context("Invalid hex in m")?;
-
-                            let results = subprocess
-                                .transact("ML-KEM/encaps", &[param_set.as_bytes(), &ek, &m])?;
-                            if subprocess.check_unsupported(
-                                &results,
-                                &format!("ML-KEM/encaps for parameterSet={param_set}"),
-                            ) {
-                                continue;
-                            }
-
-                            json!({
-                                "tcId": test_id,
-                                "c": hex::encode(&results[0]),
-                                "k": hex::encode(&results[1]),
-                            })
-                        }
-                        "decapsulation" => {
-                            let dk = hex::decode(test["dk"].as_str().context("Missing dk")?)
-                                .context("Invalid hex in dk")?;
-                            let ct = hex::decode(test["c"].as_str().context("Missing c")?)
-                                .context("Invalid hex in c")?;
-
-                            let results = subprocess
-                                .transact("ML-KEM/decaps", &[param_set.as_bytes(), &dk, &ct])?;
-                            if subprocess.check_unsupported(
-                                &results,
-                                &format!("ML-KEM/decaps for parameterSet={param_set}"),
-                            ) {
-                                continue;
-                            }
-
-                            json!({
-                                "tcId": test_id,
-                                "k": hex::encode(&results[0]),
-                            })
-                        }
-                        "encapsulationKeyCheck" => {
-                            let ek = hex::decode(test["ek"].as_str().context("Missing ek")?)
-                                .context("Invalid hex in ek")?;
-
-                            let results = subprocess.transact(
-                                "ML-KEM/encapsulationKeyCheck",
-                                &[param_set.as_bytes(), &ek],
-                            )?;
-                            if subprocess.check_unsupported(
-                                &results,
-                                &format!(
-                                    "ML-KEM/encapsulationKeyCheck for parameterSet={param_set}"
-                                ),
-                            ) {
-                                continue;
-                            }
-
-                            json!({
-                                "tcId": test_id,
-                                "testPassed": check_passed(&results[0])?,
-                            })
-                        }
-                        "decapsulationKeyCheck" => {
-                            let dk = hex::decode(test["dk"].as_str().context("Missing dk")?)
-                                .context("Invalid hex in dk")?;
-
-                            let results = subprocess.transact(
-                                "ML-KEM/decapsulationKeyCheck",
-                                &[param_set.as_bytes(), &dk],
-                            )?;
-                            if subprocess.check_unsupported(
-                                &results,
-                                &format!(
-                                    "ML-KEM/decapsulationKeyCheck for parameterSet={param_set}"
-                                ),
-                            ) {
-                                continue;
-                            }
-
-                            json!({
-                                "tcId": test_id,
-                                "testPassed": check_passed(&results[0])?,
-                            })
-                        }
-                        _ => anyhow::bail!(
-                            "Unsupported ML-KEM function in encapDecap mode: {}",
-                            function
-                        ),
+                    let (ek, dk) = two_results(&results, "ML-KEM/keyGen")?;
+                    ResponseTest {
+                        tc_id: test.tc_id,
+                        ek: Some(hex::encode(ek)),
+                        dk: Some(hex::encode(dk)),
+                        c: None,
+                        k: None,
+                        test_passed: None,
                     }
                 }
-                _ => anyhow::bail!("Unsupported ML-KEM mode: {}", mode),
+                Mode::EncapDecap => {
+                    let function = group.function.as_ref().context("Missing function")?;
+                    match function {
+                        Function::Encapsulation => {
+                            let ek = decode_hex(test.ek.as_deref(), "ek")?;
+                            let m = decode_hex(test.m.as_deref(), "m")?;
+                            let results = subprocess.transact(
+                                "ML-KEM/encaps",
+                                &[group.parameter_set.as_bytes(), &ek, &m],
+                            )?;
+                            if subprocess.check_unsupported(
+                                &results,
+                                &format!("ML-KEM/encaps for parameterSet={}", group.parameter_set),
+                            ) {
+                                continue;
+                            }
+                            let (c, k) = two_results(&results, "ML-KEM/encaps")?;
+                            ResponseTest {
+                                tc_id: test.tc_id,
+                                ek: None,
+                                dk: None,
+                                c: Some(hex::encode(c)),
+                                k: Some(hex::encode(k)),
+                                test_passed: None,
+                            }
+                        }
+                        Function::Decapsulation => {
+                            let dk = decode_hex(test.dk.as_deref(), "dk")?;
+                            let c = decode_hex(test.c.as_deref(), "c")?;
+                            let results = subprocess.transact(
+                                "ML-KEM/decaps",
+                                &[group.parameter_set.as_bytes(), &dk, &c],
+                            )?;
+                            if subprocess.check_unsupported(
+                                &results,
+                                &format!("ML-KEM/decaps for parameterSet={}", group.parameter_set),
+                            ) {
+                                continue;
+                            }
+                            let k = one_result(&results, "ML-KEM/decaps")?;
+                            ResponseTest {
+                                tc_id: test.tc_id,
+                                ek: None,
+                                dk: None,
+                                c: None,
+                                k: Some(hex::encode(k)),
+                                test_passed: None,
+                            }
+                        }
+                        Function::EncapsulationKeyCheck => {
+                            let ek = decode_hex(test.ek.as_deref(), "ek")?;
+                            let results = subprocess.transact(
+                                "ML-KEM/encapsulationKeyCheck",
+                                &[group.parameter_set.as_bytes(), &ek],
+                            )?;
+                            if subprocess.check_unsupported(
+                                &results,
+                                &format!(
+                                    "ML-KEM/encapsulationKeyCheck for parameterSet={}",
+                                    group.parameter_set
+                                ),
+                            ) {
+                                continue;
+                            }
+                            let passed = check_passed(one_result(
+                                &results,
+                                "ML-KEM/encapsulationKeyCheck",
+                            )?)?;
+                            ResponseTest {
+                                tc_id: test.tc_id,
+                                ek: None,
+                                dk: None,
+                                c: None,
+                                k: None,
+                                test_passed: Some(passed),
+                            }
+                        }
+                        Function::DecapsulationKeyCheck => {
+                            let dk = decode_hex(test.dk.as_deref(), "dk")?;
+                            let results = subprocess.transact(
+                                "ML-KEM/decapsulationKeyCheck",
+                                &[group.parameter_set.as_bytes(), &dk],
+                            )?;
+                            if subprocess.check_unsupported(
+                                &results,
+                                &format!(
+                                    "ML-KEM/decapsulationKeyCheck for parameterSet={}",
+                                    group.parameter_set
+                                ),
+                            ) {
+                                continue;
+                            }
+                            let passed = check_passed(one_result(
+                                &results,
+                                "ML-KEM/decapsulationKeyCheck",
+                            )?)?;
+                            ResponseTest {
+                                tc_id: test.tc_id,
+                                ek: None,
+                                dk: None,
+                                c: None,
+                                k: None,
+                                test_passed: Some(passed),
+                            }
+                        }
+                    }
+                }
             };
-
             response_tests.push(response_test);
         }
-
-        response_groups.push(json!({
-            "tgId": group["tgId"],
-            "tests": response_tests
-        }));
+        response_groups.push(ResponseGroup {
+            tg_id: group.tg_id,
+            tests: response_tests,
+        });
     }
-
-    Ok(json!({
-        "vsId": vector_set["vsId"],
-        "algorithm": algorithm,
-        "revision": vector_set["revision"],
-        "testGroups": response_groups
-    }))
+    serde_json::to_value(Response {
+        vs_id: vector_set.vs_id,
+        algorithm: vector_set.algorithm,
+        revision: vector_set.revision,
+        test_groups: response_groups,
+    })
+    .context("Failed to serialize ML-KEM response")
 }
 
 #[cfg(test)]
