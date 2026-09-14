@@ -12,6 +12,7 @@ homepage = "https://github.com/kriskwiatkowski/katwalk"
 [dependencies]
 hqc = { package = "hqckem-ref", version = "0.0.2" }
 mlkem-ref = { package = "mlkem-ref", version = "0.0.1" }
+ml-dsa = { version = "0.1.1", default-features = false, features = ["rand_core"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 clap = { version = "4.5", features = ["derive"] }
@@ -44,6 +45,14 @@ path = "src/bin/mlkem_wrapper.rs"
 [[bin]]
 name = "hqckem_wrapper"
 path = "src/bin/hqckem_wrapper.rs"
+
+[[bin]]
+name = "mldsa_wrapper"
+path = "src/bin/mldsa_wrapper.rs"
+
+[[bin]]
+name = "fips202_wrapper"
+path = "src/bin/fips202_wrapper.rs"
 
 [dev-dependencies]
 assert_cmd = "2.0"

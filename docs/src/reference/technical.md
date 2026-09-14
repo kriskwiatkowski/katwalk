@@ -17,7 +17,8 @@ katwalk/
 │       ├── mod.rs                 # Subprocess protocol + algorithm router
 │       └── primitives.rs          # Per-algorithm vector processing
 ├── src/bin/
-│   └── mlkem_wrapper.rs           # Built-in ML-KEM wrapper binary
+│   ├── mlkem_wrapper.rs           # Built-in ML-KEM wrapper binary
+│   └── mldsa_wrapper.rs           # Built-in ML-DSA wrapper binary
 ├── docs/                          # mdBook documentation
 ├── tests/                         # Integration and CLI tests
 └── Cargo.toml
@@ -50,10 +51,18 @@ All cryptographic work is delegated to an external wrapper binary via stdin/stdo
 | SHAKE-128, SHAKE-256 | AFT (variable output length) |
 | HMAC-SHA2-\*, HMAC-SHA3-\* | AFT |
 | **ML-KEM** (FIPS 203) | keyGen, encapsulation, decapsulation, encapsulationKeyCheck, decapsulationKeyCheck |
+| **ML-DSA** (FIPS 204) | keyGen, internal/external sigGen, internal/external sigVer |
+
+ML-DSA registration advertises deterministic and ACVP-provided 32-byte
+randomness, the internal and external signature interfaces, supplied or
+internally computed `mu`, and pure or pre-hash external signatures. The
+pre-hash implementation supports the SHA-2, SHA-3, and SHAKE algorithms
+listed in FIPS 204's HashML-DSA profile, including SHA3-256, SHA3-512,
+SHAKE-128, and SHAKE-256 for every ML-DSA parameter set.
 
 ### Stub (returns empty responses)
 
-ECDSA, ML-DSA, SLH-DSA, LMS, XMSS, hashDRBG, hmacDRBG, ctrDRBG, KDF, KDA, TLS-KDF, TLS-v1.3, KAS-ECC, KAS-ECC-SSC.
+ECDSA, SLH-DSA, LMS, XMSS, hashDRBG, hmacDRBG, ctrDRBG, KDF, KDA, TLS-KDF, TLS-v1.3, KAS-ECC, KAS-ECC-SSC.
 
 ## ML-KEM Implementation
 
@@ -86,6 +95,29 @@ katwalk --wrapper ./target/release/mlkem_wrapper --in prompt.json --out out.json
 | ML-KEM-1024 | 1568 B | 3168 B | 1568 B | 32 B |
 
 DK internal layout (FIPS 203 §6.3): `pke_dk ‖ ek ‖ H(ek) ‖ z`.
+
+## ML-DSA Implementation
+
+`src/bin/mldsa_wrapper.rs` is a self-contained FIPS 204 wrapper using the
+RustCrypto `ml-dsa` implementation. It accepts NIST ACVP vectors for `keyGen`,
+`sigGen`, and `sigVer`:
+
+| Command | Args | Returns |
+|---|---|---|
+| `ML-DSA/keyGen` | `parameter_set`, `seed` (32 B) | `[pk, sk]` |
+| `ML-DSA/signInternal` | `parameter_set`, `key_format`, `key`, `message`, `rnd` (32 B) | `[signature]` |
+| `ML-DSA/verifyInternal` | `parameter_set`, `pk`, `message`, `signature` | `[0x01]` or `[0x00]` |
+| `ML-DSA/signMu` | `parameter_set`, `key_format`, `key`, `mu` (64 B), `rnd` (32 B) | `[signature]` |
+| `ML-DSA/verifyMu` | `parameter_set`, `pk`, `mu` (64 B), `signature` | `[0x01]` or `[0x00]` |
+| `ML-DSA/signExternal` | `parameter_set`, `key_format`, `key`, `message`, `context`, `pre_hash`, `hash_alg`, `rnd` (32 B) | `[signature]` |
+| `ML-DSA/verifyExternal` | `parameter_set`, `pk`, `message`, `context`, `pre_hash`, `hash_alg`, `signature` | `[0x01]` or `[0x00]` |
+
+Parameter sets: `ML-DSA-44`, `ML-DSA-65`, and `ML-DSA-87`. Expanded secret
+keys are 2560, 4032, and 4896 bytes; public keys are 1312, 1952, and 2592
+bytes; signatures are 2420, 3309, and 4627 bytes, respectively. The external
+pre-hash path encodes `0x01 || len(context) || context || OID || PH(message)`
+before internal signing, as specified by FIPS 204; contexts longer than 255
+bytes and unsupported hash algorithms are rejected.
 
 ## Response Verification (`--expected`)
 
@@ -128,6 +160,7 @@ The ML-KEM unit tests in `primitives.rs` spawn `mlkem_wrapper` as a real subproc
 | Crate | Purpose |
 |---|---|
 | `mlkem-edu` | ML-KEM (FIPS 203) implementation used by `mlkem_wrapper` |
+| `ml-dsa` | ML-DSA (FIPS 204) implementation used by `mldsa_wrapper` |
 | `serde` / `serde_json` | JSON serialization |
 | `clap` | CLI argument parsing |
 | `anyhow` / `thiserror` | Error handling |

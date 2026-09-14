@@ -1,6 +1,10 @@
 use anyhow::{Context, Result};
 use clap::Parser;
 use log::{error, info};
+use serde::Deserialize;
+use std::collections::HashSet;
+use std::fs::OpenOptions;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 mod acvp;
@@ -35,9 +39,16 @@ struct Args {
     #[arg(long)]
     indir: Option<PathBuf>,
 
-    /// Directory for storing response files (requires -indir)
+    /// Directory for storing response files (used with --indir or --testset)
     #[arg(long)]
     outdir: Option<PathBuf>,
+
+    /// JSON manifest of vector sets to run and verify
+    #[arg(
+        long,
+        conflicts_with_all = ["regcap", "in", "out", "indir", "expected", "run", "fetch"]
+    )]
+    testset: Option<PathBuf>,
 
     /// Name of primitive to run tests for
     #[arg(long)]
@@ -60,6 +71,28 @@ struct Args {
     expected: Option<PathBuf>,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TestSetManifest {
+    tests: Vec<TestSetEntry>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TestSetEntry {
+    #[serde(rename = "in")]
+    input: PathBuf,
+    expected: PathBuf,
+    out: Option<PathBuf>,
+}
+
+#[derive(Debug)]
+struct ResolvedTestSetEntry {
+    input: PathBuf,
+    expected: PathBuf,
+    output: Option<PathBuf>,
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     env_logger::init();
@@ -73,14 +106,26 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
+    if let Some(testset) = &args.testset {
+        process_vectors_from_testset(
+            &args.wrapper,
+            args.param.as_deref(),
+            testset,
+            args.outdir.as_deref(),
+        )?;
+        return Ok(());
+    }
+
     // Handle file-based vector processing
     if let (Some(input), Some(output)) = (&args.r#in, &args.out) {
         process_vectors_from_file(
             &args.wrapper,
             args.param.as_deref(),
             input,
-            output,
+            Some(output),
             args.expected.as_deref(),
+            true,
+            None,
         )?;
         return Ok(());
     }
@@ -107,16 +152,21 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
-    error!("No operation specified. Use --regcap, --in/--out, --indir/--outdir, or --run/--fetch");
+    error!(
+        "No operation specified. Use --regcap, --in/--out, --indir/--outdir, \
+         --testset, or --run/--fetch"
+    );
     std::process::exit(1);
 }
 
 fn process_vectors_from_file(
     wrapper_path: &Path,
     param: Option<&str>,
-    input: &PathBuf,
-    output: &PathBuf,
+    input: &Path,
+    output: Option<&Path>,
     expected_path: Option<&Path>,
+    overwrite_output: bool,
+    testset_entry: Option<usize>,
 ) -> Result<()> {
     info!("Processing vectors from file: {:?}", input);
 
@@ -132,9 +182,28 @@ fn process_vectors_from_file(
     let mut subprocess = Subprocess::new(wrapper_path, param)?;
     let responses = subprocess.process_vectors(&test_vectors)?;
 
-    let output_json = serde_json::to_string_pretty(&responses)?;
-    std::fs::write(output, &output_json).context("Failed to write output file")?;
-    info!("Responses written to: {:?}", output);
+    if let Some(output) = output {
+        let output_json = serde_json::to_string_pretty(&responses)?;
+        if overwrite_output {
+            std::fs::write(output, &output_json).context("Failed to write output file")?;
+        } else {
+            let file = OpenOptions::new().write(true).create_new(true).open(output);
+            let mut file = match file {
+                Ok(file) => file,
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                    anyhow::bail!("Refusing to overwrite output file {}", output.display());
+                }
+                Err(error) => {
+                    return Err(error).with_context(|| {
+                        format!("Failed to create output file {}", output.display())
+                    });
+                }
+            };
+            file.write_all(output_json.as_bytes())
+                .context("Failed to write output file")?;
+        }
+        info!("Responses written to: {:?}", output);
+    }
 
     if subprocess.unsupported_count() > 0 {
         println!(
@@ -148,14 +217,145 @@ fn process_vectors_from_file(
             std::fs::read_to_string(path).context("Failed to read expected results file")?;
         let expected: serde_json::Value =
             serde_json::from_str(&expected_data).context("Failed to parse expected JSON")?;
-        check_expected(&responses, &expected)?;
+        check_expected_with_context(
+            &responses,
+            &expected,
+            testset_entry.map(|entry| (entry, input)),
+        )?;
         println!("PASS");
     }
 
     Ok(())
 }
 
+fn resolve_manifest_path(manifest_dir: &Path, path: &Path) -> PathBuf {
+    if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        manifest_dir.join(path)
+    }
+}
+
+fn output_file_name(input: &Path) -> Result<PathBuf> {
+    let file_name = input
+        .file_name()
+        .context("Test-set input path has no file name")?;
+    if input.extension().and_then(|extension| extension.to_str()) == Some("zip") {
+        let stem = input
+            .file_stem()
+            .context("Test-set ZIP input path has no file stem")?;
+        Ok(PathBuf::from(format!("{}.json", stem.to_string_lossy())))
+    } else {
+        Ok(PathBuf::from(file_name))
+    }
+}
+
+fn load_testset(testset: &Path, outdir: Option<&Path>) -> Result<Vec<ResolvedTestSetEntry>> {
+    let manifest_data =
+        std::fs::read_to_string(testset).context("Failed to read test-set manifest")?;
+    let manifest: TestSetManifest =
+        serde_json::from_str(&manifest_data).context("Failed to parse test-set manifest")?;
+    if manifest.tests.is_empty() {
+        anyhow::bail!("Test-set manifest contains no tests");
+    }
+
+    let manifest_dir = testset
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    if let Some(outdir) = outdir {
+        std::fs::create_dir_all(outdir).context("Failed to create output directory")?;
+    }
+
+    let mut output_paths = HashSet::new();
+    manifest
+        .tests
+        .into_iter()
+        .enumerate()
+        .map(|(index, entry)| {
+            let input = resolve_manifest_path(manifest_dir, &entry.input);
+            let expected = resolve_manifest_path(manifest_dir, &entry.expected);
+            let output = match entry.out {
+                Some(output) => Some(resolve_manifest_path(manifest_dir, &output)),
+                None => outdir
+                    .map(|outdir| output_file_name(&input).map(|name| outdir.join(name)))
+                    .transpose()?,
+            };
+
+            if let Some(output) = &output {
+                if !output_paths.insert(output.clone()) {
+                    anyhow::bail!(
+                        "Test-set entry {} reuses output path {}",
+                        index + 1,
+                        output.display()
+                    );
+                }
+                if output.try_exists().with_context(|| {
+                    format!("Failed to inspect output file {}", output.display())
+                })? {
+                    anyhow::bail!(
+                        "Test-set entry {} would overwrite existing output file {}",
+                        index + 1,
+                        output.display()
+                    );
+                }
+            }
+
+            Ok(ResolvedTestSetEntry {
+                input,
+                expected,
+                output,
+            })
+        })
+        .collect()
+}
+
+fn process_vectors_from_testset(
+    wrapper_path: &Path,
+    param: Option<&str>,
+    testset: &Path,
+    outdir: Option<&Path>,
+) -> Result<()> {
+    let entries = load_testset(testset, outdir)?;
+    info!(
+        "Processing {} vector set(s) from {:?}",
+        entries.len(),
+        testset
+    );
+
+    for (index, entry) in entries.iter().enumerate() {
+        process_vectors_from_file(
+            wrapper_path,
+            param,
+            &entry.input,
+            entry.output.as_deref(),
+            Some(&entry.expected),
+            false,
+            Some(index + 1),
+        )
+        .with_context(|| {
+            format!(
+                "Test-set entry {} (input {}, expected {})",
+                index + 1,
+                entry.input.display(),
+                entry.expected.display()
+            )
+        })?;
+    }
+
+    Ok(())
+}
+
+#[cfg(test)]
 fn check_expected(actual: &serde_json::Value, expected: &serde_json::Value) -> Result<()> {
+    check_expected_with_context(actual, expected, None)
+}
+
+fn check_expected_with_context(
+    actual: &serde_json::Value,
+    expected: &serde_json::Value,
+    testset_entry: Option<(usize, &Path)>,
+) -> Result<()> {
     // Actual may be a single response object or an array of them (one per vsId).
     // Expected results only carry testGroups; we compare group-by-group.
     let actuals = match actual {
@@ -232,8 +432,13 @@ fn check_expected(actual: &serde_json::Value, expected: &serde_json::Value) -> R
                             _ => exp_val == act_val,
                         };
                         if !matches {
+                            let source = testset_entry
+                                .map(|(entry, input)| {
+                                    format!("testset entry={entry} input={}: ", input.display())
+                                })
+                                .unwrap_or_default();
                             eprintln!(
-                                "FAIL tgId={tg_id} tcId={tc_id} field={key}: \
+                                "FAIL {source}tgId={tg_id} tcId={tc_id} field={key}: \
                                  expected={exp_val} actual={act_val}"
                             );
                             failures += 1;

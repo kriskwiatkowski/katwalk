@@ -12,10 +12,14 @@ use std::io::{Read, Write};
 use std::path::Path;
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 
+mod hash;
 mod hqckem;
+mod mldsa;
 mod mlkem;
 mod primitives;
+use hash::{process_hash as process_fips202_hash, process_xof as process_fips202_xof};
 use hqckem::process_hqckem;
+use mldsa::process_mldsa;
 use mlkem::process_mlkem;
 use primitives::*;
 
@@ -155,9 +159,13 @@ impl Subprocess {
         info!("Processing algorithm: {}", algorithm);
 
         match algorithm {
-            "SHA2-224" | "SHA2-256" | "SHA2-384" | "SHA2-512" | "SHA2-512/224" | "SHA2-512/256"
-            | "SHA3-224" | "SHA3-256" | "SHA3-384" | "SHA3-512" => process_hash(self, vector_set),
-            "SHAKE-128" | "SHAKE-256" => process_xof(self, vector_set),
+            "SHA2-224" | "SHA2-256" | "SHA2-384" | "SHA2-512" | "SHA2-512/224" | "SHA2-512/256" => {
+                process_hash(self, vector_set)
+            }
+            "SHA3-224" | "SHA3-256" | "SHA3-384" | "SHA3-512" => {
+                process_fips202_hash(self, vector_set)
+            }
+            "SHAKE-128" | "SHAKE-256" => process_fips202_xof(self, vector_set),
             "HMAC-SHA2-224" | "HMAC-SHA2-256" | "HMAC-SHA2-384" | "HMAC-SHA2-512"
             | "HMAC-SHA2-512/224" | "HMAC-SHA2-512/256" | "HMAC-SHA3-224" | "HMAC-SHA3-256"
             | "HMAC-SHA3-384" | "HMAC-SHA3-512" => process_hmac(self, vector_set),
