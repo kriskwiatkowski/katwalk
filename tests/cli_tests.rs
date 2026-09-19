@@ -22,9 +22,11 @@ fn test_cli_version() {
     let mut cmd = Command::cargo_bin("katwalk").unwrap();
     cmd.arg("--version");
 
+    let expected_version = env!("CARGO_PKG_VERSION");
+
     cmd.assert()
         .success()
-        .stdout(predicate::str::contains("0.0.1"));
+        .stdout(predicate::str::contains(expected_version));
 }
 
 #[test]
