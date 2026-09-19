@@ -1,3 +1,13 @@
+//! ACVP ML-DSA (FIPS 204) vector processing.
+//!
+//! `process_mldsa` drives keyGen/sigGen/sigVer test vectors through a
+//! wrapper subprocess. For sigGen and sigVer, the wrapper's `getConfig`
+//! registration (see [`registration_for_mode`]) advertises which parameter
+//! sets, signature interfaces, `externalMu`/`deterministic`/`preHash`
+//! options it actually implements; [`registration_supports_group`] checks a
+//! test group against that registration so unsupported groups are reported
+//! back as empty rather than sent to a wrapper that can't handle them.
+
 use super::Subprocess;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -172,6 +182,8 @@ fn two_results<'a>(results: &'a [Vec<u8>], command: &str) -> Result<(&'a [u8], &
     Ok((&results[0], &results[1]))
 }
 
+/// Decodes the signing key for `test`, per `group`'s `keyFormat` (defaults
+/// to "expanded", i.e. an `sk` field, rather than a seed to expand).
 fn signing_key(group: &TestGroup, test: &TestCase) -> Result<(KeyFormat, Vec<u8>)> {
     match group.key_format.unwrap_or(KeyFormat::Expanded) {
         KeyFormat::Seed => Ok((KeyFormat::Seed, decode_hex(test.seed.as_deref(), "seed")?)),
@@ -179,6 +191,8 @@ fn signing_key(group: &TestGroup, test: &TestCase) -> Result<(KeyFormat, Vec<u8>
     }
 }
 
+/// Resolves the signing randomness: an all-zero `rnd` for deterministic
+/// sigGen, or the ACVP-supplied `rnd` otherwise.
 fn randomness(test: &TestCase, deterministic: bool) -> Result<Vec<u8>> {
     if deterministic {
         if test.rnd.is_some() {
@@ -194,6 +208,7 @@ fn randomness(test: &TestCase, deterministic: bool) -> Result<Vec<u8>> {
     }
 }
 
+/// `preHash` ("pure" or "preHash"), required on external-interface groups.
 fn pre_hash(group: &TestGroup) -> Result<&str> {
     group
         .pre_hash
@@ -201,6 +216,7 @@ fn pre_hash(group: &TestGroup) -> Result<&str> {
         .context("Missing preHash in external ML-DSA group")
 }
 
+/// Decodes and validates a 64-byte `mu` (precomputed message representative).
 fn mu(test: &TestCase) -> Result<Vec<u8>> {
     let mu = decode_hex(test.mu.as_deref(), "mu")?;
     if mu.len() != 64 {
@@ -209,6 +225,7 @@ fn mu(test: &TestCase) -> Result<Vec<u8>> {
     Ok(mu)
 }
 
+/// Decodes and validates the external-interface `context` (at most 255 bytes).
 fn external_context(test: &TestCase) -> Result<Vec<u8>> {
     let context = decode_hex(test.context.as_deref(), "context")?;
     if context.len() > 255 {
@@ -217,6 +234,8 @@ fn external_context(test: &TestCase) -> Result<Vec<u8>> {
     Ok(context)
 }
 
+/// Resolves `hashAlg` for the external interface: absent for "pure", a
+/// required algorithm name for "preHash".
 fn hash_alg(test: &TestCase, pre_hash: &str) -> Result<Vec<u8>> {
     if pre_hash == "pure" {
         if test.hash_alg.is_some() {
@@ -235,6 +254,7 @@ fn hash_alg(test: &TestCase, pre_hash: &str) -> Result<Vec<u8>> {
         .to_vec())
 }
 
+/// sigGen only ever exercises the AFT (Algorithm Functional Test) flavour.
 fn require_siggen_aft(group: &TestGroup) -> Result<()> {
     match group.test_type.as_deref() {
         Some("AFT") => Ok(()),
@@ -243,6 +263,18 @@ fn require_siggen_aft(group: &TestGroup) -> Result<()> {
     }
 }
 
+/// An empty response for a group the wrapper's registration doesn't
+/// support, so the server sees a group entry with no test results instead
+/// of the group being silently dropped.
+fn unsupported_response_group(tg_id: u64) -> ResponseGroup {
+    ResponseGroup {
+        tg_id,
+        tests: Vec::new(),
+    }
+}
+
+/// Finds the `getConfig` registration entry for `mode` ("keyGen", "sigGen"
+/// or "sigVer"), if the wrapper advertised one.
 fn registration_for_mode<'a>(config: &'a Value, mode: &str) -> Option<&'a Value> {
     config
         .as_array()
@@ -251,8 +283,15 @@ fn registration_for_mode<'a>(config: &'a Value, mode: &str) -> Option<&'a Value>
         .find(|registration| registration["mode"] == mode)
 }
 
-fn supports_siggen_group(config: &Value, group: &TestGroup) -> bool {
-    let Some(registration) = registration_for_mode(config, "sigGen") else {
+/// Whether the wrapper's `mode` registration ("sigGen" or "sigVer")
+/// advertises support for every ACVP-relevant dimension of `group`:
+/// its parameter set, `externalMu`, signature interface, and — where the
+/// group specifies them — `deterministic` and `preHash`. Both sigGen and
+/// sigVer groups need this check; a group covering a combination the
+/// wrapper doesn't implement must be reported as unsupported rather than
+/// sent to it.
+fn registration_supports_group(config: &Value, mode: &str, group: &TestGroup) -> bool {
+    let Some(registration) = registration_for_mode(config, mode) else {
         return false;
     };
 
@@ -267,19 +306,40 @@ fn supports_siggen_group(config: &Value, group: &TestGroup) -> bool {
                     .iter()
                     .any(|value| value == group.signature_interface.as_str())
             });
+    // sigVer groups never set `deterministic` (it only governs how sigGen
+    // draws randomness), so there's nothing to check against for them.
     let deterministic_supported = match group.deterministic {
         None => true,
         Some(deterministic) => registration["deterministic"]
             .as_array()
             .is_some_and(|values| values.iter().any(|value| value == deterministic)),
     };
+    // `preHash` is only present on external-interface groups.
     let pre_hash_supported = match group.pre_hash.as_deref() {
         None => true,
         Some(pre_hash) => registration["preHash"]
             .as_array()
             .is_some_and(|values| values.iter().any(|value| value == pre_hash)),
     };
-    external_mu_supported && interface_supported && deterministic_supported && pre_hash_supported
+    let parameter_set_supported =
+        registration["capabilities"]
+            .as_array()
+            .is_some_and(|capabilities| {
+                capabilities.iter().any(|capability| {
+                    capability["parameterSets"]
+                        .as_array()
+                        .is_some_and(|values| {
+                            values
+                                .iter()
+                                .any(|value| value == group.parameter_set.as_str())
+                        })
+                })
+            });
+    external_mu_supported
+        && interface_supported
+        && deterministic_supported
+        && pre_hash_supported
+        && parameter_set_supported
 }
 
 pub fn process_mldsa(subprocess: &mut Subprocess, vector_set: &Value) -> Result<Value> {
@@ -290,25 +350,6 @@ pub fn process_mldsa(subprocess: &mut Subprocess, vector_set: &Value) -> Result<
         _ => None,
     };
     let mut response_groups = Vec::with_capacity(vector_set.test_groups.len());
-
-    if matches!(vector_set.mode, Mode::SigVer)
-        && registration_for_mode(config.as_ref().unwrap(), "sigVer").is_none()
-    {
-        response_groups.resize_with(vector_set.test_groups.len(), || ResponseGroup {
-            tg_id: 0,
-            tests: Vec::new(),
-        });
-        for (response_group, group) in response_groups.iter_mut().zip(&vector_set.test_groups) {
-            response_group.tg_id = group.tg_id;
-        }
-        return serde_json::to_value(Response {
-            vs_id: vector_set.vs_id,
-            algorithm: vector_set.algorithm,
-            revision: vector_set.revision,
-            test_groups: response_groups,
-        })
-        .context("Failed to serialize ML-DSA response");
-    }
 
     for group in &vector_set.test_groups {
         let parameter_set = group.parameter_set.as_str();
@@ -338,11 +379,8 @@ pub fn process_mldsa(subprocess: &mut Subprocess, vector_set: &Value) -> Result<
             }
             Mode::SigGen => {
                 require_siggen_aft(group)?;
-                if !supports_siggen_group(config.as_ref().unwrap(), group) {
-                    response_groups.push(ResponseGroup {
-                        tg_id: group.tg_id,
-                        tests: Vec::new(),
-                    });
+                if !registration_supports_group(config.as_ref().unwrap(), "sigGen", group) {
+                    response_groups.push(unsupported_response_group(group.tg_id));
                     continue;
                 }
                 let deterministic = group
@@ -416,6 +454,10 @@ pub fn process_mldsa(subprocess: &mut Subprocess, vector_set: &Value) -> Result<
                 }
             }
             Mode::SigVer => {
+                if !registration_supports_group(config.as_ref().unwrap(), "sigVer", group) {
+                    response_groups.push(unsupported_response_group(group.tg_id));
+                    continue;
+                }
                 for test in &group.tests {
                     let pk = decode_hex(test.pk.as_deref().or(group.pk.as_deref()), "pk")?;
                     let signature = decode_hex(test.signature.as_deref(), "signature")?;
@@ -493,7 +535,7 @@ pub fn process_mldsa(subprocess: &mut Subprocess, vector_set: &Value) -> Result<
 
 #[cfg(test)]
 mod tests {
-    use super::{process_mldsa, registration_for_mode, supports_siggen_group, TestGroup};
+    use super::{process_mldsa, registration_for_mode, registration_supports_group, TestGroup};
     use crate::subprocess::Subprocess;
     use serde_json::json;
     use std::path::Path;
@@ -506,6 +548,18 @@ mod tests {
             "signatureInterface": signature_interface,
             "externalMu": external_mu,
             "deterministic": true,
+            "tests": []
+        }))
+        .unwrap()
+    }
+
+    /// sigVer groups never carry `deterministic` (unlike sigGen groups).
+    fn sigver_group(signature_interface: &str, external_mu: bool) -> TestGroup {
+        serde_json::from_value(json!({
+            "tgId": 1,
+            "parameterSet": "ML-DSA-44",
+            "signatureInterface": signature_interface,
+            "externalMu": external_mu,
             "tests": []
         }))
         .unwrap()
@@ -525,86 +579,144 @@ mod tests {
     }
 
     #[test]
-    fn supports_siggen_group_true_when_registration_advertises_interface_and_mu() {
+    fn registration_supports_group_true_when_registration_advertises_interface_and_mu() {
         let config = json!([{
             "mode": "sigGen",
             "externalMu": [true, false],
             "signatureInterfaces": ["internal", "external"],
-            "deterministic": [true, false]
+            "deterministic": [true, false],
+            "capabilities": [{"parameterSets": ["ML-DSA-44"]}]
         }]);
-        assert!(supports_siggen_group(
+        assert!(registration_supports_group(
             &config,
+            "sigGen",
             &siggen_group("internal", false)
         ));
-        assert!(supports_siggen_group(
+        assert!(registration_supports_group(
             &config,
+            "sigGen",
             &siggen_group("external", true)
         ));
     }
 
     #[test]
-    fn supports_siggen_group_false_when_deterministic_not_advertised() {
+    fn registration_supports_group_false_when_parameter_set_not_advertised() {
         let config = json!([{
             "mode": "sigGen",
             "externalMu": [true, false],
             "signatureInterfaces": ["internal", "external"],
-            "deterministic": [true]
+            "deterministic": [true, false],
+            "capabilities": [{"parameterSets": ["ML-DSA-65", "ML-DSA-87"]}]
         }]);
-        let mut group = siggen_group("internal", false);
-        group.deterministic = Some(false);
-        assert!(!supports_siggen_group(&config, &group));
-    }
-
-    #[test]
-    fn supports_siggen_group_false_when_pre_hash_not_advertised() {
-        let config = json!([{
-            "mode": "sigGen",
-            "externalMu": [false],
-            "signatureInterfaces": ["external"],
-            "deterministic": [true],
-            "preHash": ["pure"]
-        }]);
-        let mut group = siggen_group("external", false);
-        group.pre_hash = Some("preHash".to_string());
-        assert!(!supports_siggen_group(&config, &group));
-    }
-
-    #[test]
-    fn supports_siggen_group_false_when_sig_gen_registration_missing() {
-        let config = json!([{
-            "mode": "sigVer",
-            "externalMu": [true],
-            "signatureInterfaces": ["internal"]
-        }]);
-        assert!(!supports_siggen_group(
+        assert!(!registration_supports_group(
             &config,
+            "sigGen",
             &siggen_group("internal", false)
         ));
     }
 
     #[test]
-    fn supports_siggen_group_false_when_external_mu_not_advertised() {
+    fn registration_supports_group_false_when_deterministic_not_advertised() {
+        let config = json!([{
+            "mode": "sigGen",
+            "externalMu": [true, false],
+            "signatureInterfaces": ["internal", "external"],
+            "deterministic": [true],
+            "capabilities": [{"parameterSets": ["ML-DSA-44"]}]
+        }]);
+        let mut group = siggen_group("internal", false);
+        group.deterministic = Some(false);
+        assert!(!registration_supports_group(&config, "sigGen", &group));
+    }
+
+    #[test]
+    fn registration_supports_group_false_when_pre_hash_not_advertised() {
+        let config = json!([{
+            "mode": "sigGen",
+            "externalMu": [false],
+            "signatureInterfaces": ["external"],
+            "deterministic": [true],
+            "preHash": ["pure"],
+            "capabilities": [{"parameterSets": ["ML-DSA-44"]}]
+        }]);
+        let mut group = siggen_group("external", false);
+        group.pre_hash = Some("preHash".to_string());
+        assert!(!registration_supports_group(&config, "sigGen", &group));
+    }
+
+    #[test]
+    fn registration_supports_group_false_when_registration_missing_for_mode() {
+        let config = json!([{
+            "mode": "sigVer",
+            "externalMu": [true],
+            "signatureInterfaces": ["internal"]
+        }]);
+        assert!(!registration_supports_group(
+            &config,
+            "sigGen",
+            &siggen_group("internal", false)
+        ));
+    }
+
+    #[test]
+    fn registration_supports_group_false_when_external_mu_not_advertised() {
         let config = json!([{
             "mode": "sigGen",
             "externalMu": [false],
             "signatureInterfaces": ["internal", "external"]
         }]);
-        assert!(!supports_siggen_group(
+        assert!(!registration_supports_group(
             &config,
+            "sigGen",
             &siggen_group("internal", true)
         ));
     }
 
     #[test]
-    fn supports_siggen_group_false_when_interface_not_advertised() {
+    fn registration_supports_group_false_when_interface_not_advertised() {
         let config = json!([{
             "mode": "sigGen",
             "externalMu": [true, false],
             "signatureInterfaces": ["internal"]
         }]);
-        assert!(!supports_siggen_group(
+        assert!(!registration_supports_group(
             &config,
+            "sigGen",
             &siggen_group("external", false)
+        ));
+    }
+
+    #[test]
+    fn registration_supports_group_checks_the_sigver_registration_for_sigver_groups() {
+        // A config with only a "sigGen" entry must not be mistaken for
+        // sigVer support just because *some* registration exists.
+        let sig_gen_only = json!([{
+            "mode": "sigGen",
+            "externalMu": [true],
+            "signatureInterfaces": ["internal"],
+            "capabilities": [{"parameterSets": ["ML-DSA-44"]}]
+        }]);
+        assert!(!registration_supports_group(
+            &sig_gen_only,
+            "sigVer",
+            &sigver_group("internal", true)
+        ));
+
+        let sig_ver = json!([{
+            "mode": "sigVer",
+            "externalMu": [true],
+            "signatureInterfaces": ["internal"],
+            "capabilities": [{"parameterSets": ["ML-DSA-44"]}]
+        }]);
+        assert!(registration_supports_group(
+            &sig_ver,
+            "sigVer",
+            &sigver_group("internal", true)
+        ));
+        assert!(!registration_supports_group(
+            &sig_ver,
+            "sigVer",
+            &sigver_group("external", true)
         ));
     }
 
