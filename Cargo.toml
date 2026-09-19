@@ -8,6 +8,8 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/kriskwiatkowski/katwalk"
 homepage = "https://github.com/kriskwiatkowski/katwalk"
 
+[profile.release]
+strip = true
 
 [dependencies]
 hqc = { package = "hqckem-ref", version = "0.0.2" }
