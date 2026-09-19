@@ -74,6 +74,15 @@ enum SignatureInterface {
     External,
 }
 
+impl SignatureInterface {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Internal => "internal",
+            Self::External => "external",
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Deserialize)]
 enum KeyFormat {
     #[serde(rename = "seed")]
@@ -234,11 +243,61 @@ fn require_siggen_aft(group: &TestGroup) -> Result<()> {
     }
 }
 
+fn registration_for_mode<'a>(config: &'a Value, mode: &str) -> Option<&'a Value> {
+    config
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|registration| registration["mode"] == mode)
+}
+
+fn supports_siggen_group(config: &Value, group: &TestGroup) -> bool {
+    let Some(registration) = registration_for_mode(config, "sigGen") else {
+        return false;
+    };
+
+    let external_mu_supported = registration["externalMu"]
+        .as_array()
+        .is_some_and(|values| values.iter().any(|value| value == group.external_mu));
+    let interface_supported =
+        registration["signatureInterfaces"]
+            .as_array()
+            .is_some_and(|values| {
+                values
+                    .iter()
+                    .any(|value| value == group.signature_interface.as_str())
+            });
+    external_mu_supported && interface_supported
+}
+
 pub fn process_mldsa(subprocess: &mut Subprocess, vector_set: &Value) -> Result<Value> {
     let vector_set: VectorSet =
         serde_json::from_value(vector_set.clone()).context("Invalid ML-DSA vector set")?;
-
+    let config = match vector_set.mode {
+        Mode::SigGen | Mode::SigVer => Some(subprocess.get_config()?),
+        _ => None,
+    };
     let mut response_groups = Vec::with_capacity(vector_set.test_groups.len());
+
+    if matches!(vector_set.mode, Mode::SigVer)
+        && registration_for_mode(config.as_ref().unwrap(), "sigVer").is_none()
+    {
+        response_groups.resize_with(vector_set.test_groups.len(), || ResponseGroup {
+            tg_id: 0,
+            tests: Vec::new(),
+        });
+        for (response_group, group) in response_groups.iter_mut().zip(&vector_set.test_groups) {
+            response_group.tg_id = group.tg_id;
+        }
+        return serde_json::to_value(Response {
+            vs_id: vector_set.vs_id,
+            algorithm: vector_set.algorithm,
+            revision: vector_set.revision,
+            test_groups: response_groups,
+        })
+        .context("Failed to serialize ML-DSA response");
+    }
+
     for group in &vector_set.test_groups {
         let parameter_set = group.parameter_set.as_str();
         let mut response_tests = Vec::with_capacity(group.tests.len());
@@ -267,6 +326,13 @@ pub fn process_mldsa(subprocess: &mut Subprocess, vector_set: &Value) -> Result<
             }
             Mode::SigGen => {
                 require_siggen_aft(group)?;
+                if !supports_siggen_group(config.as_ref().unwrap(), group) {
+                    response_groups.push(ResponseGroup {
+                        tg_id: group.tg_id,
+                        tests: Vec::new(),
+                    });
+                    continue;
+                }
                 let deterministic = group
                     .deterministic
                     .context("Missing deterministic in ML-DSA sigGen group")?;
@@ -415,10 +481,92 @@ pub fn process_mldsa(subprocess: &mut Subprocess, vector_set: &Value) -> Result<
 
 #[cfg(test)]
 mod tests {
-    use super::process_mldsa;
+    use super::{process_mldsa, registration_for_mode, supports_siggen_group, TestGroup};
     use crate::subprocess::Subprocess;
     use serde_json::json;
     use std::path::Path;
+
+    fn siggen_group(signature_interface: &str, external_mu: bool) -> TestGroup {
+        serde_json::from_value(json!({
+            "tgId": 1,
+            "testType": "AFT",
+            "parameterSet": "ML-DSA-44",
+            "signatureInterface": signature_interface,
+            "externalMu": external_mu,
+            "deterministic": true,
+            "tests": []
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn registration_for_mode_finds_matching_entry() {
+        let config = json!([
+            {"mode": "sigGen", "externalMu": [true, false]},
+            {"mode": "sigVer", "externalMu": [true]}
+        ]);
+        assert_eq!(
+            registration_for_mode(&config, "sigVer").unwrap()["externalMu"],
+            json!([true])
+        );
+        assert!(registration_for_mode(&config, "keyGen").is_none());
+    }
+
+    #[test]
+    fn supports_siggen_group_true_when_registration_advertises_interface_and_mu() {
+        let config = json!([{
+            "mode": "sigGen",
+            "externalMu": [true, false],
+            "signatureInterfaces": ["internal", "external"]
+        }]);
+        assert!(supports_siggen_group(
+            &config,
+            &siggen_group("internal", false)
+        ));
+        assert!(supports_siggen_group(
+            &config,
+            &siggen_group("external", true)
+        ));
+    }
+
+    #[test]
+    fn supports_siggen_group_false_when_sig_gen_registration_missing() {
+        let config = json!([{
+            "mode": "sigVer",
+            "externalMu": [true],
+            "signatureInterfaces": ["internal"]
+        }]);
+        assert!(!supports_siggen_group(
+            &config,
+            &siggen_group("internal", false)
+        ));
+    }
+
+    #[test]
+    fn supports_siggen_group_false_when_external_mu_not_advertised() {
+        let config = json!([{
+            "mode": "sigGen",
+            "externalMu": [false],
+            "signatureInterfaces": ["internal", "external"]
+        }]);
+        assert!(!supports_siggen_group(
+            &config,
+            &siggen_group("internal", true)
+        ));
+    }
+
+    #[test]
+    fn supports_siggen_group_false_when_interface_not_advertised() {
+        let config = json!([{
+            "mode": "sigGen",
+            "externalMu": [true, false],
+            "signatureInterfaces": ["internal"]
+        }]);
+        assert!(!supports_siggen_group(
+            &config,
+            &siggen_group("external", false)
+        ));
+    }
 
     fn start_wrapper() -> Subprocess {
         let mut path = std::env::current_exe().expect("cannot resolve test executable");
