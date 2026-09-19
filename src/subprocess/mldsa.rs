@@ -267,7 +267,19 @@ fn supports_siggen_group(config: &Value, group: &TestGroup) -> bool {
                     .iter()
                     .any(|value| value == group.signature_interface.as_str())
             });
-    external_mu_supported && interface_supported
+    let deterministic_supported = match group.deterministic {
+        None => true,
+        Some(deterministic) => registration["deterministic"]
+            .as_array()
+            .is_some_and(|values| values.iter().any(|value| value == deterministic)),
+    };
+    let pre_hash_supported = match group.pre_hash.as_deref() {
+        None => true,
+        Some(pre_hash) => registration["preHash"]
+            .as_array()
+            .is_some_and(|values| values.iter().any(|value| value == pre_hash)),
+    };
+    external_mu_supported && interface_supported && deterministic_supported && pre_hash_supported
 }
 
 pub fn process_mldsa(subprocess: &mut Subprocess, vector_set: &Value) -> Result<Value> {
@@ -339,7 +351,7 @@ pub fn process_mldsa(subprocess: &mut Subprocess, vector_set: &Value) -> Result<
 
                 for test in &group.tests {
                     let (key_format, key) = signing_key(group, test)?;
-                    let rnd = randomness(test, deterministic)?;
+                    let rnd: Vec<u8> = randomness(test, deterministic)?;
                     let results = match (group.external_mu, group.signature_interface) {
                         (true, _) => {
                             let mu = mu(test)?;
@@ -517,7 +529,8 @@ mod tests {
         let config = json!([{
             "mode": "sigGen",
             "externalMu": [true, false],
-            "signatureInterfaces": ["internal", "external"]
+            "signatureInterfaces": ["internal", "external"],
+            "deterministic": [true, false]
         }]);
         assert!(supports_siggen_group(
             &config,
@@ -527,6 +540,33 @@ mod tests {
             &config,
             &siggen_group("external", true)
         ));
+    }
+
+    #[test]
+    fn supports_siggen_group_false_when_deterministic_not_advertised() {
+        let config = json!([{
+            "mode": "sigGen",
+            "externalMu": [true, false],
+            "signatureInterfaces": ["internal", "external"],
+            "deterministic": [true]
+        }]);
+        let mut group = siggen_group("internal", false);
+        group.deterministic = Some(false);
+        assert!(!supports_siggen_group(&config, &group));
+    }
+
+    #[test]
+    fn supports_siggen_group_false_when_pre_hash_not_advertised() {
+        let config = json!([{
+            "mode": "sigGen",
+            "externalMu": [false],
+            "signatureInterfaces": ["external"],
+            "deterministic": [true],
+            "preHash": ["pure"]
+        }]);
+        let mut group = siggen_group("external", false);
+        group.pre_hash = Some("preHash".to_string());
+        assert!(!supports_siggen_group(&config, &group));
     }
 
     #[test]
