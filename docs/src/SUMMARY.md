@@ -7,6 +7,7 @@
 - [Quick Start](user-guide/quick-start.md)
 - [Installation](user-guide/installation.md)
 - [Configuration](user-guide/configuration.md)
+- [Test-Set Manifests](user-guide/testset.md)
 
 # Reference
 

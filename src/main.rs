@@ -228,14 +228,6 @@ fn process_vectors_from_file(
     Ok(())
 }
 
-fn resolve_manifest_path(manifest_dir: &Path, path: &Path) -> PathBuf {
-    if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        manifest_dir.join(path)
-    }
-}
-
 fn output_file_name(input: &Path) -> Result<PathBuf> {
     let file_name = input
         .file_name()
@@ -259,10 +251,6 @@ fn load_testset(testset: &Path, outdir: Option<&Path>) -> Result<Vec<ResolvedTes
         anyhow::bail!("Test-set manifest contains no tests");
     }
 
-    let manifest_dir = testset
-        .parent()
-        .filter(|path| !path.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."));
     if let Some(outdir) = outdir {
         std::fs::create_dir_all(outdir).context("Failed to create output directory")?;
     }
@@ -273,10 +261,14 @@ fn load_testset(testset: &Path, outdir: Option<&Path>) -> Result<Vec<ResolvedTes
         .into_iter()
         .enumerate()
         .map(|(index, entry)| {
-            let input = resolve_manifest_path(manifest_dir, &entry.input);
-            let expected = resolve_manifest_path(manifest_dir, &entry.expected);
+            // Manifest paths are taken as-is, so a relative path resolves
+            // against the directory katwalk was started from -- not against
+            // the manifest's own location. That lets a manifest checked into
+            // a source tree name vectors that live in a build tree.
+            let input = entry.input;
+            let expected = entry.expected;
             let output = match entry.out {
-                Some(output) => Some(resolve_manifest_path(manifest_dir, &output)),
+                Some(output) => Some(output),
                 None => outdir
                     .map(|outdir| output_file_name(&input).map(|name| outdir.join(name)))
                     .transpose()?,

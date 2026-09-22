@@ -116,11 +116,14 @@ fn test_directory_creation() {
     assert!(output_dir.is_dir());
 }
 
+/// Writes a manifest plus its vectors and returns `(run_dir, manifest)`.
+/// The manifest names its vectors relative to `run_dir`, which is the
+/// directory katwalk must be started from for those paths to resolve.
 fn write_sha3_testset_fixture(
     temp_dir: &TempDir,
     expected_md: &str,
     output: Option<&str>,
-) -> std::path::PathBuf {
+) -> (std::path::PathBuf, std::path::PathBuf) {
     let manifest_dir = temp_dir.path().join("manifest");
     let vectors_dir = manifest_dir.join("vectors");
     fs::create_dir_all(&vectors_dir).unwrap();
@@ -171,13 +174,13 @@ fn write_sha3_testset_fixture(
         ),
     )
     .unwrap();
-    manifest
+    (manifest_dir, manifest)
 }
 
 #[test]
-fn test_cli_testset_resolves_manifest_relative_paths_and_writes_to_outdir() {
+fn test_cli_testset_resolves_paths_against_the_working_directory() {
     let temp_dir = TempDir::new().unwrap();
-    let manifest = write_sha3_testset_fixture(
+    let (run_dir, manifest) = write_sha3_testset_fixture(
         &temp_dir,
         "a7ffc6f8bf1ed76651c14756a061d662f580ff4de43b49fa82d80a4b80f8434a",
         None,
@@ -191,7 +194,7 @@ fn test_cli_testset_resolves_manifest_relative_paths_and_writes_to_outdir() {
         .arg(&manifest)
         .arg("--outdir")
         .arg(&outdir)
-        .current_dir(temp_dir.path());
+        .current_dir(&run_dir);
 
     cmd.assert()
         .success()
@@ -200,15 +203,44 @@ fn test_cli_testset_resolves_manifest_relative_paths_and_writes_to_outdir() {
 }
 
 #[test]
-fn test_cli_testset_failure_identifies_manifest_entry() {
+fn test_cli_testset_ignores_the_manifests_own_directory() {
+    // The manifest is reached by a path outside the working directory, as
+    // happens when it is checked into a source tree but names vectors that
+    // live in a build tree. Its vectors must still resolve against the cwd.
     let temp_dir = TempDir::new().unwrap();
-    let manifest = write_sha3_testset_fixture(&temp_dir, "00", None);
+    let (run_dir, manifest) = write_sha3_testset_fixture(
+        &temp_dir,
+        "a7ffc6f8bf1ed76651c14756a061d662f580ff4de43b49fa82d80a4b80f8434a",
+        None,
+    );
+    let elsewhere = temp_dir.path().join("elsewhere");
+    fs::create_dir_all(&elsewhere).unwrap();
+    let moved_manifest = elsewhere.join("testset.json");
+    fs::rename(&manifest, &moved_manifest).unwrap();
 
     let mut cmd = Command::cargo_bin("katwalk").unwrap();
     cmd.arg("--wrapper")
         .arg(assert_cmd::cargo::cargo_bin("fips202_wrapper"))
         .arg("--testset")
-        .arg(&manifest);
+        .arg(&moved_manifest)
+        .current_dir(&run_dir);
+
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("PASS"));
+}
+
+#[test]
+fn test_cli_testset_failure_identifies_manifest_entry() {
+    let temp_dir = TempDir::new().unwrap();
+    let (run_dir, manifest) = write_sha3_testset_fixture(&temp_dir, "00", None);
+
+    let mut cmd = Command::cargo_bin("katwalk").unwrap();
+    cmd.arg("--wrapper")
+        .arg(assert_cmd::cargo::cargo_bin("fips202_wrapper"))
+        .arg("--testset")
+        .arg(&manifest)
+        .current_dir(&run_dir);
 
     cmd.assert()
         .failure()
@@ -220,22 +252,19 @@ fn test_cli_testset_failure_identifies_manifest_entry() {
 #[test]
 fn test_cli_testset_refuses_to_overwrite_outputs() {
     let temp_dir = TempDir::new().unwrap();
-    let manifest = write_sha3_testset_fixture(
+    let (run_dir, manifest) = write_sha3_testset_fixture(
         &temp_dir,
         "a7ffc6f8bf1ed76651c14756a061d662f580ff4de43b49fa82d80a4b80f8434a",
         Some("response.json"),
     );
-    fs::write(
-        temp_dir.path().join("manifest/response.json"),
-        "existing output",
-    )
-    .unwrap();
+    fs::write(run_dir.join("response.json"), "existing output").unwrap();
 
     let mut cmd = Command::cargo_bin("katwalk").unwrap();
     cmd.arg("--wrapper")
         .arg("/nonexistent/wrapper")
         .arg("--testset")
-        .arg(&manifest);
+        .arg(&manifest)
+        .current_dir(&run_dir);
 
     cmd.assert().failure().stderr(predicate::str::contains(
         "would overwrite existing output file",
