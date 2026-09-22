@@ -74,7 +74,9 @@ Every `.json` and `.zip` file in `--indir` is processed; output files land in `-
 ## 5. Process a Test-Set Manifest
 
 Use `--testset` to run several input/expected-result pairs in one invocation.
-Paths in the manifest are resolved relative to the manifest file:
+Every entry is verified against its own expected-results file. Relative paths in
+the manifest resolve against the directory you run katwalk from, so the manifest
+itself can live anywhere:
 
 ```json
 {
@@ -86,17 +88,11 @@ Paths in the manifest are resolved relative to the manifest file:
     {
       "in": "SHAKE-128/prompt.json",
       "expected": "SHAKE-128/expectedResults.json",
-      "out": "responses/shake-128.json"
+      "out": "shake-128-responses.json"
     }
   ]
 }
 ```
-
-Each entry is verified against its `expected` file. An entry's optional `out`
-stores its response relative to the manifest; otherwise, responses are only
-verified unless `--outdir` is supplied. With `--outdir`, entries without `out`
-write a response using their input file name. Test-set output paths must be
-unique and must not already exist.
 
 ```bash
 ./target/release/katwalk \
@@ -104,6 +100,13 @@ unique and must not already exist.
   --testset /path/to/fips202-testset.json \
   --outdir /tmp/fips202-responses
 ```
+
+Responses are written only where an entry has an `out` or `--outdir` is
+supplied; otherwise entries are verified in memory. Output paths must be unique
+and must not already exist.
+
+See [Test-Set Manifests](testset.md) for the full manifest schema, path
+resolution rules and failure output.
 
 ## ML-KEM with the Built-in Wrapper
 
