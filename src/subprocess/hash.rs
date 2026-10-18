@@ -35,6 +35,12 @@ struct Capability {
         deserialize_with = "deserialize_capability_boolean"
     )]
     out_bit: bool,
+    #[serde(
+        default,
+        rename = "performLargeDataTest",
+        deserialize_with = "deserialize_large_data_test_sizes"
+    )]
+    perform_large_data_test: Vec<u8>,
 }
 
 fn deserialize_capability_boolean<'de, D>(deserializer: D) -> Result<bool, D::Error>
@@ -76,6 +82,39 @@ where
     }
 
     deserializer.deserialize_any(BooleanVisitor)
+}
+
+fn deserialize_large_data_test_sizes<'de, D>(deserializer: D) -> Result<Vec<u8>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    struct SizesVisitor;
+
+    impl<'de> Visitor<'de> for SizesVisitor {
+        type Value = Vec<u8>;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            formatter.write_str("an array containing only 1, 2, 4, or 8")
+        }
+
+        fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+        where
+            A: serde::de::SeqAccess<'de>,
+        {
+            let mut sizes = Vec::new();
+            while let Some(value) = seq.next_element::<u8>()? {
+                if !matches!(value, 1 | 2 | 4 | 8) {
+                    return Err(A::Error::custom(format!(
+                        "performLargeDataTest contains unsupported size class {value}"
+                    )));
+                }
+                sizes.push(value);
+            }
+            Ok(sizes)
+        }
+    }
+
+    deserializer.deserialize_seq(SizesVisitor)
 }
 
 #[derive(Debug, Deserialize)]
@@ -176,6 +215,16 @@ fn bit_capabilities(subprocess: &mut Subprocess, algorithm: &str) -> Result<(boo
         .find(|capability| capability.algorithm == algorithm)
         .with_context(|| format!("Wrapper configuration does not advertise {algorithm}"))?;
     Ok((capability.in_bit, capability.out_bit))
+}
+
+fn supports_ldt(subprocess: &mut Subprocess, algorithm: &str) -> Result<bool> {
+    let capabilities: Vec<Capability> = serde_json::from_value(subprocess.get_config()?)
+        .context("Invalid wrapper configuration")?;
+    let capability = capabilities
+        .iter()
+        .find(|capability| capability.algorithm == algorithm)
+        .with_context(|| format!("Wrapper configuration does not advertise {algorithm}"))?;
+    Ok(!capability.perform_large_data_test.is_empty())
 }
 
 fn supports_aft(
@@ -294,6 +343,9 @@ fn process(
                             vector_set.algorithm,
                             group.tg_id
                         );
+                    }
+                    if !supports_ldt(subprocess, &vector_set.algorithm)? {
+                        continue;
                     }
                     let large_msg = test.large_msg.as_ref().context("Missing largeMsg")?;
                     let content = hex::decode(&large_msg.content)
@@ -434,5 +486,65 @@ mod tests {
         assert!(invalid_type
             .to_string()
             .contains(r#"a boolean or the string "true" or "false""#));
+    }
+
+    #[test]
+    fn capabilities_accept_valid_large_data_test_sizes() {
+        let capabilities: Vec<Capability> = serde_json::from_value(json!([
+            {"algorithm": "SHA3-256", "performLargeDataTest": [1, 2, 4, 8]},
+            {"algorithm": "SHA3-512", "performLargeDataTest": [4]}
+        ]))
+        .unwrap();
+        assert_eq!(capabilities[0].perform_large_data_test, vec![1, 2, 4, 8]);
+        assert_eq!(capabilities[1].perform_large_data_test, vec![4]);
+    }
+
+    #[test]
+    fn capabilities_default_large_data_test_when_absent() {
+        let capabilities: Vec<Capability> =
+            serde_json::from_value(json!([{"algorithm": "SHA3-256"}])).unwrap();
+        assert!(capabilities[0].perform_large_data_test.is_empty());
+    }
+
+    #[test]
+    fn capabilities_reject_invalid_large_data_test_sizes() {
+        let invalid_value = serde_json::from_value::<Vec<Capability>>(json!([
+            {"algorithm": "SHA3-256", "performLargeDataTest": [1, 99]}
+        ]))
+        .unwrap_err();
+        assert!(invalid_value
+            .to_string()
+            .contains("performLargeDataTest contains unsupported size class 99"));
+
+        let invalid_element_type = serde_json::from_value::<Vec<Capability>>(json!([
+            {"algorithm": "SHA3-256", "performLargeDataTest": [1, "4"]}
+        ]))
+        .unwrap_err();
+        assert!(invalid_element_type.to_string().contains("invalid type"));
+
+        let invalid_shape = serde_json::from_value::<Vec<Capability>>(json!([
+            {"algorithm": "SHA3-256", "performLargeDataTest": true}
+        ]))
+        .unwrap_err();
+        assert!(invalid_shape.to_string().contains("invalid type"));
+    }
+
+    #[test]
+    fn capability_lookup_reflects_declared_algorithm_sizes() {
+        let capabilities: Vec<Capability> = serde_json::from_value(json!([
+            {"algorithm": "SHA3-256", "performLargeDataTest": [1, 2]},
+            {"algorithm": "SHA3-512"}
+        ]))
+        .unwrap();
+        let sha3_256 = capabilities
+            .iter()
+            .find(|capability| capability.algorithm == "SHA3-256")
+            .unwrap();
+        let sha3_512 = capabilities
+            .iter()
+            .find(|capability| capability.algorithm == "SHA3-512")
+            .unwrap();
+        assert!(!sha3_256.perform_large_data_test.is_empty());
+        assert!(sha3_512.perform_large_data_test.is_empty());
     }
 }
