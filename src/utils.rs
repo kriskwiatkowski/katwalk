@@ -83,7 +83,7 @@ mod tests {
             let mut zip = ZipWriter::new(file);
 
             let test_vector = r#"{"algorithm": "SHA2-256", "vsId": 1}"#;
-            zip.start_file("test1.json", FileOptions::default())?;
+            zip.start_file("test1.json", FileOptions::<()>::default())?;
             zip.write_all(test_vector.as_bytes())?;
 
             zip.finish()?;
