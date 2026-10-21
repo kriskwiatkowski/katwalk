@@ -217,14 +217,42 @@ fn bit_capabilities(subprocess: &mut Subprocess, algorithm: &str) -> Result<(boo
     Ok((capability.in_bit, capability.out_bit))
 }
 
-fn supports_ldt(subprocess: &mut Subprocess, algorithm: &str) -> Result<bool> {
+/// One GiB of message, expressed in bits — the unit ACVP's LDT size classes
+/// (`performLargeDataTest`: 1, 2, 4, or 8) are denominated in.
+const GIB_BITS: u64 = 1 << 33;
+
+/// ACVP packs every LDT size class (1, 2, 4, 8 GiB) an algorithm was
+/// registered for into a single test group, distinguished only by
+/// `largeMsg.fullLength` — so each test case's size class must be checked
+/// individually against the wrapper's advertised `performLargeDataTest`
+/// sizes, rather than gating the whole group on it being non-empty.
+fn supports_ldt(subprocess: &mut Subprocess, msg: &LargeMessage, algorithm: &str) -> Result<bool> {
+    // Get the full length of the test vector.
+    if !msg.full_length.is_multiple_of(GIB_BITS) {
+        anyhow::bail!(
+            "largeMsg fullLength {} bits is not a whole-GiB LDT size class",
+            msg.full_length
+        );
+    }
+    let gib = msg.full_length / GIB_BITS;
+    let size_class = u8::try_from(gib)
+        .ok()
+        .filter(|size| matches!(size, 1 | 2 | 4 | 8))
+        .with_context(|| {
+            format!(
+                "largeMsg fullLength {} bits is an unsupported LDT size class",
+                msg.full_length
+            )
+        })?;
+
+    // Check if the wrapper advertises support for the required LDT and a size class.
     let capabilities: Vec<Capability> = serde_json::from_value(subprocess.get_config()?)
         .context("Invalid wrapper configuration")?;
     let capability = capabilities
         .iter()
         .find(|capability| capability.algorithm == algorithm)
         .with_context(|| format!("Wrapper configuration does not advertise {algorithm}"))?;
-    Ok(!capability.perform_large_data_test.is_empty())
+    Ok(capability.perform_large_data_test.contains(&size_class))
 }
 
 fn supports_aft(
@@ -344,10 +372,11 @@ fn process(
                             group.tg_id
                         );
                     }
-                    if !supports_ldt(subprocess, &vector_set.algorithm)? {
+                    let large_msg: &LargeMessage =
+                        test.large_msg.as_ref().context("Missing largeMsg")?;
+                    if !supports_ldt(subprocess, large_msg, &vector_set.algorithm)? {
                         continue;
                     }
-                    let large_msg = test.large_msg.as_ref().context("Missing largeMsg")?;
                     let content = hex::decode(&large_msg.content)
                         .context("Invalid hex in largeMsg.content")?;
                     if large_msg.content_length != content.len() as u64 * 8 {
@@ -402,8 +431,10 @@ pub fn process_xof(subprocess: &mut Subprocess, vector_set: &Value) -> Result<Va
 
 #[cfg(test)]
 mod tests {
-    use super::{supports_aft, Capability, OutputKind, VectorSet};
+    use super::{supports_aft, supports_ldt, Capability, LargeMessage, OutputKind, VectorSet};
+    use crate::subprocess::Subprocess;
     use serde_json::json;
+    use std::path::Path;
 
     #[test]
     fn models_deserialize_sha3_and_shake_aft_shapes() {
@@ -546,5 +577,57 @@ mod tests {
             .unwrap();
         assert!(!sha3_256.perform_large_data_test.is_empty());
         assert!(sha3_512.perform_large_data_test.is_empty());
+    }
+
+    fn start_fips202_wrapper() -> Subprocess {
+        let mut path = std::env::current_exe().expect("cannot resolve test executable");
+        path.pop();
+        if path.ends_with("deps") {
+            path.pop();
+        }
+        path.push("fips202_wrapper");
+        Subprocess::new(Path::new(&path), None)
+            .unwrap_or_else(|e| panic!("failed to start fips202_wrapper at {path:?}: {e}"))
+    }
+
+    fn large_message(full_length: u64) -> LargeMessage {
+        serde_json::from_value(json!({
+            "content": "00",
+            "contentLength": 8,
+            "fullLength": full_length,
+            "expansionTechnique": "repeating"
+        }))
+        .unwrap()
+    }
+
+    // ACVP generates largeMsg.fullLength as an exact multiple of 1 GiB
+    // (8_589_934_592 bits) for every size class it tests, so supports_ldt
+    // must reject anything that isn't — a prior regression hardcoded the
+    // size class instead of deriving it from fullLength, which silently
+    // turned this error case into `Ok(false)`.
+    #[test]
+    fn supports_ldt_rejects_full_length_not_aligned_to_a_whole_gib() {
+        let mut wrapper = start_fips202_wrapper();
+        let msg = large_message(100);
+        assert!(supports_ldt(&mut wrapper, &msg, "SHA3-256").is_err());
+    }
+
+    #[test]
+    fn supports_ldt_rejects_gib_multiples_outside_1_2_4_8() {
+        let mut wrapper = start_fips202_wrapper();
+        let msg = large_message(3 * 8_589_934_592); // 3 GiB is not a valid tier
+        assert!(supports_ldt(&mut wrapper, &msg, "SHA3-256").is_err());
+    }
+
+    // fips202_wrapper's getConfig doesn't advertise performLargeDataTest for
+    // any algorithm, so every valid size class must come back unsupported
+    // rather than be attempted.
+    #[test]
+    fn supports_ldt_skips_sizes_the_wrapper_never_registered() {
+        let mut wrapper = start_fips202_wrapper();
+        for gib in [1u64, 2, 4, 8] {
+            let msg = large_message(gib * 8_589_934_592);
+            assert!(!supports_ldt(&mut wrapper, &msg, "SHA3-256").unwrap());
+        }
     }
 }
