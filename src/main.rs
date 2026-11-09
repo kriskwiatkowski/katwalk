@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 
 mod acvp;
 mod config;
+mod mcp;
 mod subprocess;
 mod utils;
 
@@ -58,9 +59,10 @@ struct Args {
     #[arg(long)]
     fetch: Option<String>,
 
-    /// Path to the wrapper binary
-    #[arg(short, long)]
-    wrapper: PathBuf,
+    /// Path to the wrapper binary (required unless --mcp is set, where the
+    /// wrapper is supplied per tool call instead)
+    #[arg(short, long, required_unless_present = "mcp")]
+    wrapper: Option<PathBuf>,
 
     /// Optional parameter that's passed to the wrapper
     #[arg(long)]
@@ -69,6 +71,15 @@ struct Args {
     /// Path to expected results JSON for verification (used with --in/--out)
     #[arg(long)]
     expected: Option<PathBuf>,
+
+    /// Run as an MCP (Model Context Protocol) server over stdio, exposing
+    /// tools to generate adversarial test vectors and run them against a
+    /// wrapper binary. Intended for AI coding assistants.
+    #[arg(
+        long,
+        conflicts_with_all = ["regcap", "in", "out", "indir", "outdir", "testset", "run", "fetch", "wrapper", "param", "expected"]
+    )]
+    mcp: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -98,9 +109,18 @@ async fn main() -> Result<()> {
     env_logger::init();
     let args = Args::parse();
 
+    if args.mcp {
+        return mcp::serve().await;
+    }
+
+    let wrapper = args
+        .wrapper
+        .as_deref()
+        .context("--wrapper is required unless --mcp is set")?;
+
     // Handle regcap flag
     if args.regcap {
-        let mut subprocess = Subprocess::new(&args.wrapper, args.param.as_deref())?;
+        let mut subprocess = Subprocess::new(wrapper, args.param.as_deref())?;
         let regcap = subprocess.get_config()?;
         println!("{}", serde_json::to_string_pretty(&regcap)?);
         return Ok(());
@@ -108,7 +128,7 @@ async fn main() -> Result<()> {
 
     if let Some(testset) = &args.testset {
         process_vectors_from_testset(
-            &args.wrapper,
+            wrapper,
             args.param.as_deref(),
             testset,
             args.outdir.as_deref(),
@@ -119,7 +139,7 @@ async fn main() -> Result<()> {
     // Handle file-based vector processing
     if let (Some(input), Some(output)) = (&args.r#in, &args.out) {
         process_vectors_from_file(
-            &args.wrapper,
+            wrapper,
             args.param.as_deref(),
             input,
             Some(output),
@@ -132,14 +152,14 @@ async fn main() -> Result<()> {
 
     // Handle directory-based processing
     if let (Some(indir), Some(outdir)) = (&args.indir, &args.outdir) {
-        process_vectors_from_directory(&args.wrapper, args.param.as_deref(), indir, outdir)?;
+        process_vectors_from_directory(wrapper, args.param.as_deref(), indir, outdir)?;
         return Ok(());
     }
 
     // Handle interactive mode with ACVP server
     if args.run.is_some() || args.fetch.is_some() {
         let config = Config::from_file(&args.config)?;
-        let mut client = ACVPClient::new(config, &args.wrapper, args.param.as_deref()).await?;
+        let mut client = ACVPClient::new(config, wrapper, args.param.as_deref()).await?;
 
         if let Some(primitive) = args.fetch {
             client.fetch_vectors(&primitive).await?;
@@ -154,7 +174,7 @@ async fn main() -> Result<()> {
 
     error!(
         "No operation specified. Use --regcap, --in/--out, --indir/--outdir, \
-         --testset, or --run/--fetch"
+         --testset, --run/--fetch, or --mcp"
     );
     std::process::exit(1);
 }
